@@ -44,13 +44,13 @@
  * itself lives.
  *
  * NOT everything gets mirrored, though -- only files that land in a
- * Homework, Lecture Notes, Case(s)/Case Studies, or Readings/Pre-read
- * folder (see REMARKABLE_CATEGORY_KEYWORDS below for the exact
- * keyword match). Anything in Unsorted - Review, a dedicated Exams
- * folder, or any other folder name that doesn't match one of those
- * four categories is left out of the reMarkable copy on purpose --
- * it still syncs normally into the main per-course structure, just
- * not onto the reMarkable mirror.
+ * Homework, Lecture Notes, Case(s)/Case Studies, Readings/Pre-read, or
+ * Exams/exam-prep folder (see REMARKABLE_CATEGORY_KEYWORDS below for
+ * the exact keyword match). Anything in Unsorted - Review, or any
+ * other folder name that doesn't match one of those five categories,
+ * is left out of the reMarkable copy on purpose -- it still syncs
+ * normally into the main per-course structure, just not onto the
+ * reMarkable mirror.
  *
  * ---- One-time setup ----
  *
@@ -87,7 +87,8 @@
  *     copy everything already synced from BEFORE the reMarkable mirror
  *     existed. Pure Drive-to-Drive, no Canvas calls -- safe to re-run,
  *     skips anything already copied, and applies the same Homework/
- *     Lecture Notes/Case/Readings filter runSync uses going forward.
+ *     Lecture Notes/Case/Readings/Exam filter runSync uses going
+ *     forward.
  *     Everything synced from now on via runSync copies itself
  *     automatically; this is only for the backlog.
  *
@@ -95,7 +96,8 @@
  *     (the one that copied everything, before the category filter existed),
  *     run `pruneRemarkableFolder` once afterward to remove anything from
  *     the reMarkable folders that doesn't belong under the new filter
- *     (Unsorted - Review, Exams, etc). It only trashes copies inside
+ *     (Unsorted - Review, or anything else outside Homework/Lecture
+ *     Notes/Case/Readings/Exam). It only trashes copies inside
  *     reMarkable/ -- never touches the original files in your main
  *     per-course folders -- and trashed items still land in Drive's
  *     own Trash, so this is recoverable if it removes something you
@@ -274,7 +276,7 @@ function sync_(dry) {
 
         // Mirror the same file, flat, into reMarkable/<class> -- see
         // the "reMarkable mirror" note at the top of this file. Only
-        // for files landing in a Homework/Lecture Notes/Case/Readings
+        // for files landing in a Homework/Lecture Notes/Case/Readings/Exam
         // folder -- isRemarkableEligiblePath_ is the filter. A plain
         // Drive-to-Drive copy (makeCopy), not a re-download: by this
         // point mainFile is already the final PDF if it started out
@@ -496,20 +498,23 @@ function getRemarkableFolder_(course) {
 }
 
 // Which categories actually get mirrored to reMarkable: homework
-// assignments, lecture notes/slides, cases, and pre-read/readings.
-// Everything else (Unsorted - Review, a dedicated Exams folder, or
-// any other folder name an instructor happens to use) still syncs
-// into the main per-course structure as always -- it's just left out
-// of the reMarkable copy. Matched against the full destination path
-// joined together, case-insensitive, so it works for both the fixed
-// "lecture-pages" labels (Homework/Readings/Lecture Notes) and
-// whatever folder names a "mirror" course's instructor actually used
-// (e.g. "Case Studies", "Slides", "Pre-reads").
+// assignments, lecture notes/slides, cases, pre-read/readings, and
+// exams/exam-prep (including the dedicated Exams folder the
+// scrubPracticeMaterials* functions below feed). Everything else
+// (Unsorted - Review, or any other folder name an instructor happens
+// to use) still syncs into the main per-course structure as always --
+// it's just left out of the reMarkable copy. Matched against the full
+// destination path joined together, case-insensitive, so it works for
+// both the fixed "lecture-pages" labels (Homework/Readings/Lecture
+// Notes) and whatever folder names a "mirror" course's instructor
+// actually used (e.g. "Case Studies", "Slides", "Pre-reads"), plus the
+// "Exams" folder created for the practice-materials scrub.
 const REMARKABLE_CATEGORY_KEYWORDS = {
   homework: ["homework", "hw", "problem set", "pset", "assignment"],
   lecture: ["lecture", "slide", "notes"],
   case: ["case"],
   reading: ["reading", "pre-read", "preread", "pre class", "pre-class"],
+  exam: ["exam", "final", "midterm", "practice final", "practice exam"],
 };
 
 function isRemarkableEligiblePath_(pathSegments) {
@@ -528,7 +533,7 @@ function isRemarkableEligiblePath_(pathSegments) {
  * otherwise never get mirrored). Pure Drive-to-Drive -- walks each
  * course's existing Drive folder tree (every subfolder, recursively,
  * tracking the folder-name path as it goes) and copies anything that
- * (a) matches the Homework/Lecture Notes/Case/Readings filter above
+ * (a) matches the Homework/Lecture Notes/Case/Readings/Exam filter above
  * and (b) isn't already present (by filename) into the matching flat
  * reMarkable/<class> folder. No Canvas calls, so this is cheap and
  * safe to re-run.
@@ -571,7 +576,7 @@ function backfillRemarkableFolder() {
 
   const summary =
     copied + " file(s) copied, " + skipped + " already present, " +
-    ineligible + " skipped (not homework/lecture/case/reading).";
+    ineligible + " skipped (not homework/lecture/case/reading/exam).";
   Logger.log(summary);
   return summary;
 }
@@ -602,7 +607,7 @@ function pruneRemarkableFolder() {
       } else {
         file.setTrashed(true);
         trashed++;
-        Logger.log("  trashed (not homework/lecture/case/reading): " + file.getName());
+        Logger.log("  trashed (not homework/lecture/case/reading/exam): " + file.getName());
       }
     }
     Logger.log(course.name + ": pruned reMarkable/" + course.remarkableFolder);
