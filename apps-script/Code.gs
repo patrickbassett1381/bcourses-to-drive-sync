@@ -30,11 +30,31 @@
  * item sitting outside any real subfolder) goes into an
  * `Unsorted - Review` folder per course instead of a guess.
  *
+ * ---- reMarkable mirror (copy, not a replacement) ----
+ *
+ * Every course with a `remarkableFolder` name set also gets a SECOND,
+ * flat copy of each file placed under reMarkable/<remarkableFolder> --
+ * one folder per class, no Readings/Homework/Lecture Notes split --
+ * so importing onto the device means opening one folder per class
+ * instead of digging through each course's real subfolder structure.
+ * This never changes or removes anything from the per-course
+ * mirror/lecture-pages structure above; it's purely an additional
+ * copy, made with Drive's own file-copy (no re-download, no re-
+ * conversion). See REMARKABLE_ROOT_FOLDER_ID below for where the
+ * "reMarkable" folder itself lives.
+ *
  * ---- One-time setup ----
  *
  * 1. Fill in driveFolderId and mode for each course in COURSES below
  *    (see SETUP_APPSSCRIPT.md step 6 for how to create those folders
  *    and find their IDs).
+ *
+ * 1b. (Optional) To put the reMarkable mirror folder somewhere specific
+ *     (e.g. inside your top-level "Haas MBA Materials" folder instead
+ *     of directly in My Drive), paste that parent folder's ID into
+ *     REMARKABLE_ROOT_FOLDER_ID below. Leave the TODO placeholder as-is
+ *     to skip this -- the script then creates "reMarkable" at the top
+ *     level of My Drive automatically, no setup needed.
  *
  * 2. Project Settings (gear icon, left sidebar) -> Script Properties ->
  *    add a property:
@@ -53,6 +73,13 @@
  *
  * 5. Once dryRun looks right, run `runSync` once manually the same way
  *    to do a real pass.
+ *
+ * 5b. Run `backfillRemarkableFolder` once (function dropdown -> Run) to
+ *     copy everything already synced from BEFORE the reMarkable mirror
+ *     existed. Pure Drive-to-Drive, no Canvas calls -- safe to re-run,
+ *     skips anything already copied. Everything synced from now on via
+ *     runSync copies itself automatically; this is only for the
+ *     backlog.
  *
  * 6. Triggers (clock icon, left sidebar) -> Add Trigger -> function
  *    `runSync` -> Time-driven -> Day timer -> 6am to 7am -> Save.
@@ -77,6 +104,7 @@ const COURSES = [
     mode: "lecture-pages",
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
+    remarkableFolder: "Data and Decisions",
   },
   {
     courseId: 1555514,
@@ -85,6 +113,7 @@ const COURSES = [
     mode: "lecture-pages",
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
+    remarkableFolder: "Economics",
   },
   {
     courseId: 1555594,
@@ -93,6 +122,7 @@ const COURSES = [
     mode: "mirror",
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
+    remarkableFolder: "Financial Accounting",
   },
   {
     courseId: 1555298,
@@ -101,6 +131,7 @@ const COURSES = [
     mode: "mirror",
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
+    remarkableFolder: "Leading People",
   },
 ];
 
@@ -114,6 +145,13 @@ function stateParentFolderId_() {
 const STATE_FILENAME = "_bcourses_sync_state.json";
 
 const UNSORTED_FOLDER_NAME = "Unsorted - Review";
+
+// Parent folder the reMarkable mirror tree lives under. Leave the
+// TODO placeholder to have the script create "reMarkable" directly at
+// the top level of My Drive (no setup needed); paste a folder ID here
+// instead if you'd rather it live somewhere specific, e.g. inside your
+// top-level "Haas MBA Materials" folder.
+const REMARKABLE_ROOT_FOLDER_ID = "TODO_PASTE_REMARKABLE_PARENT_FOLDER_ID";
 
 // ---- Entry points ----------------------------------------------------
 
@@ -201,16 +239,33 @@ function sync_(dry) {
         // before uploading. A same-name match is treated as "already
         // there" and skipped, so a crash-and-retry can no longer
         // produce duplicate copies.
+        let mainFile;
         if (folder.getFilesByName(uploadName).hasNext()) {
           Logger.log("  (already in Drive, skipping): " + uploadName);
+          mainFile = folder.getFilesByName(uploadName).next();
         } else {
           const resp = UrlFetchApp.fetch(meta.url, { muteHttpExceptions: true });
           const rawBlob = resp.getBlob();
           const finalBlob = isWord
             ? convertDocxToPdf_(rawBlob.getBytes(), fname).setName(uploadName)
             : rawBlob.setName(uploadName);
-          folder.createFile(finalBlob);
+          mainFile = folder.createFile(finalBlob);
         }
+
+        // Mirror the same file, flat, into reMarkable/<class> -- see
+        // the "reMarkable mirror" note at the top of this file. A
+        // plain Drive-to-Drive copy (makeCopy), not a re-download: by
+        // this point mainFile is already the final PDF if it started
+        // out as a Word doc, so the copy is too. Checked by filename
+        // the same way the main folder is, so re-runs never duplicate.
+        if (course.remarkableFolder) {
+          const rmFolder = getRemarkableFolder_(course);
+          if (!rmFolder.getFilesByName(uploadName).hasNext()) {
+            mainFile.makeCopy(uploadName, rmFolder);
+            Logger.log("  -> copied into reMarkable/" + course.remarkableFolder);
+          }
+        }
+
         synced.add(fid);
         // Saved after EVERY successful upload, not just at the end of
         // the course. A first sync can be a large backlog, each upload
@@ -393,6 +448,75 @@ function getOrCreateFolderPath_(rootFolder, pathSegments) {
     folder = it.hasNext() ? it.next() : folder.createFolder(name);
   });
   return folder;
+}
+
+// ---- reMarkable mirror folder --------------------------------------
+// A second, flat (no Readings/Homework/Lecture Notes split) copy of
+// everything, organized as reMarkable/<class>, so pulling material
+// onto the device means opening one folder per class instead of
+// hunting through each course's real subfolder structure. Copy-only:
+// the per-course mirror/lecture-pages structure above is unchanged
+// and remains the system of record. Note: because this is flat, two
+// different files in the same course that happen to share an exact
+// filename (rare, but possible across different source subfolders)
+// will collide here -- only the first one copied survives under that
+// name. Nothing is lost from the main per-course structure either way.
+
+function remarkableRootFolder_() {
+  if (REMARKABLE_ROOT_FOLDER_ID && REMARKABLE_ROOT_FOLDER_ID.indexOf("TODO") !== 0) {
+    return DriveApp.getFolderById(REMARKABLE_ROOT_FOLDER_ID);
+  }
+  return DriveApp.getRootFolder(); // no parent configured -- top level of My Drive
+}
+
+function getRemarkableFolder_(course) {
+  return getOrCreateFolderPath_(remarkableRootFolder_(), ["reMarkable", course.remarkableFolder]);
+}
+
+/**
+ * ONE-OFF: backfills the reMarkable mirror for files that were synced
+ * BEFORE that feature existed (runSync only ever copies files it is
+ * uploading for the first time, so anything already synced would
+ * otherwise never get mirrored). Pure Drive-to-Drive -- walks each
+ * course's existing Drive folder tree (every subfolder, recursively)
+ * and copies anything not already present (by filename) into the
+ * matching flat reMarkable/<class> folder. No Canvas calls, so this
+ * is cheap and safe to re-run.
+ */
+function backfillRemarkableFolder() {
+  let copied = 0, skipped = 0;
+  COURSES.forEach(function (course) {
+    if (!course.remarkableFolder || course.driveFolderId.indexOf("TODO") === 0) return;
+    const rmFolder = getRemarkableFolder_(course);
+    const rmFolderId = rmFolder.getId();
+
+    function walk(folder) {
+      const files = folder.getFiles();
+      while (files.hasNext()) {
+        const file = files.next();
+        if (file.getName() === STATE_FILENAME) continue;
+        if (rmFolder.getFilesByName(file.getName()).hasNext()) {
+          skipped++;
+        } else {
+          file.makeCopy(file.getName(), rmFolder);
+          copied++;
+        }
+      }
+      const subfolders = folder.getFolders();
+      while (subfolders.hasNext()) {
+        const sub = subfolders.next();
+        if (sub.getId() === rmFolderId) continue; // don't walk into reMarkable's own tree
+        walk(sub);
+      }
+    }
+
+    walk(DriveApp.getFolderById(course.driveFolderId));
+    Logger.log(course.name + ": backfilled into reMarkable/" + course.remarkableFolder);
+  });
+
+  const summary = copied + " file(s) copied, " + skipped + " already present.";
+  Logger.log(summary);
+  return summary;
 }
 
 // ---- Canvas discovery --------------------------------------------------
@@ -646,22 +770,21 @@ function getProp_(key, fallback) {
   return v === null ? fallback : v;
 }
 
- /**
+/**
  * ONE-OFF: pulls every file linked from the Data & Decisions "Practice
  * Materials" and "More Practice Materials" pages into a fixed Drive
  * folder. Not part of the daily runSync -- these two pages are invisible
  * to the normal crawl because the Pages tab is hidden for students on
  * this course (same kind of tab-toggle-off Canvas does for Files), and
  * neither page is linked from any Module either, so there is no path
- * discoverFileIds_ can reach them by. Fetching a page directly BY SLUG
- * still works even with the tab hidden -- it's only the *listing* that's
- * blocked -- which is what this relies on.
+ * the normal discovery can reach them by. Fetching a page directly BY
+ * SLUG still works even with the tab hidden -- it's only the *listing*
+ * that's blocked -- which is what this relies on.
  *
- * Paste this into the same Code.gs project (it reuses canvasGet_,
- * extractFileIds_, getFileMetadata_, convertDocxToPdf_, getProp_, which
- * are all already defined there). Select `scrubPracticeMaterials` in the
- * function dropdown and Run. Safe to re-run -- it checks the destination
- * folder by filename before uploading, so nothing duplicates.
+ * Covers 2023 and earlier plus the "More Practice Materials" quiz
+ * archive; scrubPracticeMaterials2024_2025() below already covers 2024
+ * and 2025. Safe to re-run -- checks the destination folder by filename
+ * before uploading, so nothing duplicates.
  */
 function scrubPracticeMaterials() {
   const baseUrl = getProp_("CANVAS_BASE_URL", "https://bcourses.berkeley.edu").replace(/\/$/, "");
@@ -716,8 +839,9 @@ function scrubPracticeMaterials() {
  * Final Exam and its "Practice Final Exam" companion set) from the
  * Practice Materials page -- 22 files total. IDs taken directly from
  * the page body already read, so this skips the page fetch entirely.
- * Same dedupe-by-filename safety as the full version. Run this first;
- * run scrubPracticeMaterials() afterward to pick up 2023 and earlier.
+ * Same dedupe-by-filename safety as the full version. Already run once;
+ * kept here so re-running is harmless (everything will just show as
+ * "already there"). Run scrubPracticeMaterials() for 2023 and earlier.
  */
 function scrubPracticeMaterials2024_2025() {
   const baseUrl = getProp_("CANVAS_BASE_URL", "https://bcourses.berkeley.edu").replace(/\/$/, "");
