@@ -33,15 +33,24 @@
  * ---- reMarkable mirror (copy, not a replacement) ----
  *
  * Every course with a `remarkableFolder` name set also gets a SECOND,
- * flat copy of each file placed under reMarkable/<remarkableFolder> --
- * one folder per class, no Readings/Homework/Lecture Notes split --
- * so importing onto the device means opening one folder per class
- * instead of digging through each course's real subfolder structure.
- * This never changes or removes anything from the per-course
- * mirror/lecture-pages structure above; it's purely an additional
- * copy, made with Drive's own file-copy (no re-download, no re-
- * conversion). See REMARKABLE_ROOT_FOLDER_ID below for where the
- * "reMarkable" folder itself lives.
+ * flat copy placed under reMarkable/<remarkableFolder> -- one folder
+ * per class, no Readings/Homework/Lecture Notes split -- so importing
+ * onto the device means opening one folder per class instead of
+ * digging through each course's real subfolder structure. This never
+ * changes or removes anything from the per-course mirror/lecture-
+ * pages structure above; it's purely an additional copy, made with
+ * Drive's own file-copy (no re-download, no re-conversion). See
+ * REMARKABLE_ROOT_FOLDER_ID below for where the "reMarkable" folder
+ * itself lives.
+ *
+ * NOT everything gets mirrored, though -- only files that land in a
+ * Homework, Lecture Notes, Case(s)/Case Studies, or Readings/Pre-read
+ * folder (see REMARKABLE_CATEGORY_KEYWORDS below for the exact
+ * keyword match). Anything in Unsorted - Review, a dedicated Exams
+ * folder, or any other folder name that doesn't match one of those
+ * four categories is left out of the reMarkable copy on purpose --
+ * it still syncs normally into the main per-course structure, just
+ * not onto the reMarkable mirror.
  *
  * ---- One-time setup ----
  *
@@ -77,9 +86,20 @@
  * 5b. Run `backfillRemarkableFolder` once (function dropdown -> Run) to
  *     copy everything already synced from BEFORE the reMarkable mirror
  *     existed. Pure Drive-to-Drive, no Canvas calls -- safe to re-run,
- *     skips anything already copied. Everything synced from now on via
- *     runSync copies itself automatically; this is only for the
- *     backlog.
+ *     skips anything already copied, and applies the same Homework/
+ *     Lecture Notes/Case/Readings filter runSync uses going forward.
+ *     Everything synced from now on via runSync copies itself
+ *     automatically; this is only for the backlog.
+ *
+ * 5c. If you had already run an earlier version of backfillRemarkableFolder
+ *     (the one that copied everything, before the category filter existed),
+ *     run `pruneRemarkableFolder` once afterward to remove anything from
+ *     the reMarkable folders that doesn't belong under the new filter
+ *     (Unsorted - Review, Exams, etc). It only trashes copies inside
+ *     reMarkable/ -- never touches the original files in your main
+ *     per-course folders -- and trashed items still land in Drive's
+ *     own Trash, so this is recoverable if it removes something you
+ *     actually wanted there.
  *
  * 6. Triggers (clock icon, left sidebar) -> Add Trigger -> function
  *    `runSync` -> Time-driven -> Day timer -> 6am to 7am -> Save.
@@ -253,12 +273,14 @@ function sync_(dry) {
         }
 
         // Mirror the same file, flat, into reMarkable/<class> -- see
-        // the "reMarkable mirror" note at the top of this file. A
-        // plain Drive-to-Drive copy (makeCopy), not a re-download: by
-        // this point mainFile is already the final PDF if it started
-        // out as a Word doc, so the copy is too. Checked by filename
-        // the same way the main folder is, so re-runs never duplicate.
-        if (course.remarkableFolder) {
+        // the "reMarkable mirror" note at the top of this file. Only
+        // for files landing in a Homework/Lecture Notes/Case/Readings
+        // folder -- isRemarkableEligiblePath_ is the filter. A plain
+        // Drive-to-Drive copy (makeCopy), not a re-download: by this
+        // point mainFile is already the final PDF if it started out
+        // as a Word doc, so the copy is too. Checked by filename the
+        // same way the main folder is, so re-runs never duplicate.
+        if (course.remarkableFolder && isRemarkableEligiblePath_(destPath)) {
           const rmFolder = getRemarkableFolder_(course);
           if (!rmFolder.getFilesByName(uploadName).hasNext()) {
             mainFile.makeCopy(uploadName, rmFolder);
@@ -473,28 +495,61 @@ function getRemarkableFolder_(course) {
   return getOrCreateFolderPath_(remarkableRootFolder_(), ["reMarkable", course.remarkableFolder]);
 }
 
+// Which categories actually get mirrored to reMarkable: homework
+// assignments, lecture notes/slides, cases, and pre-read/readings.
+// Everything else (Unsorted - Review, a dedicated Exams folder, or
+// any other folder name an instructor happens to use) still syncs
+// into the main per-course structure as always -- it's just left out
+// of the reMarkable copy. Matched against the full destination path
+// joined together, case-insensitive, so it works for both the fixed
+// "lecture-pages" labels (Homework/Readings/Lecture Notes) and
+// whatever folder names a "mirror" course's instructor actually used
+// (e.g. "Case Studies", "Slides", "Pre-reads").
+const REMARKABLE_CATEGORY_KEYWORDS = {
+  homework: ["homework", "hw", "problem set", "pset", "assignment"],
+  lecture: ["lecture", "slide", "notes"],
+  case: ["case"],
+  reading: ["reading", "pre-read", "preread", "pre class", "pre-class"],
+};
+
+function isRemarkableEligiblePath_(pathSegments) {
+  const joined = (pathSegments || []).join(" / ").toLowerCase();
+  return Object.keys(REMARKABLE_CATEGORY_KEYWORDS).some(function (cat) {
+    return REMARKABLE_CATEGORY_KEYWORDS[cat].some(function (kw) {
+      return joined.indexOf(kw) !== -1;
+    });
+  });
+}
+
 /**
  * ONE-OFF: backfills the reMarkable mirror for files that were synced
  * BEFORE that feature existed (runSync only ever copies files it is
  * uploading for the first time, so anything already synced would
  * otherwise never get mirrored). Pure Drive-to-Drive -- walks each
- * course's existing Drive folder tree (every subfolder, recursively)
- * and copies anything not already present (by filename) into the
- * matching flat reMarkable/<class> folder. No Canvas calls, so this
- * is cheap and safe to re-run.
+ * course's existing Drive folder tree (every subfolder, recursively,
+ * tracking the folder-name path as it goes) and copies anything that
+ * (a) matches the Homework/Lecture Notes/Case/Readings filter above
+ * and (b) isn't already present (by filename) into the matching flat
+ * reMarkable/<class> folder. No Canvas calls, so this is cheap and
+ * safe to re-run.
  */
 function backfillRemarkableFolder() {
-  let copied = 0, skipped = 0;
+  let copied = 0, skipped = 0, ineligible = 0;
   COURSES.forEach(function (course) {
     if (!course.remarkableFolder || course.driveFolderId.indexOf("TODO") === 0) return;
     const rmFolder = getRemarkableFolder_(course);
     const rmFolderId = rmFolder.getId();
 
-    function walk(folder) {
+    function walk(folder, pathSoFar) {
+      const eligible = isRemarkableEligiblePath_(pathSoFar);
       const files = folder.getFiles();
       while (files.hasNext()) {
         const file = files.next();
         if (file.getName() === STATE_FILENAME) continue;
+        if (!eligible) {
+          ineligible++;
+          continue;
+        }
         if (rmFolder.getFilesByName(file.getName()).hasNext()) {
           skipped++;
         } else {
@@ -506,17 +561,73 @@ function backfillRemarkableFolder() {
       while (subfolders.hasNext()) {
         const sub = subfolders.next();
         if (sub.getId() === rmFolderId) continue; // don't walk into reMarkable's own tree
-        walk(sub);
+        walk(sub, pathSoFar.concat([sub.getName()]));
       }
     }
 
-    walk(DriveApp.getFolderById(course.driveFolderId));
-    Logger.log(course.name + ": backfilled into reMarkable/" + course.remarkableFolder);
+    walk(DriveApp.getFolderById(course.driveFolderId), []);
+    Logger.log(course.name + ": backfilled eligible files into reMarkable/" + course.remarkableFolder);
   });
 
-  const summary = copied + " file(s) copied, " + skipped + " already present.";
+  const summary =
+    copied + " file(s) copied, " + skipped + " already present, " +
+    ineligible + " skipped (not homework/lecture/case/reading).";
   Logger.log(summary);
   return summary;
+}
+
+/**
+ * ONE-OFF cleanup: if you ran an earlier version of backfillRemarkableFolder
+ * (back when it copied everything, before the category filter above
+ * existed), this removes anything from the reMarkable/<class> folders
+ * that doesn't belong under the current filter -- cross-checking each
+ * file there against whether a same-named file exists somewhere
+ * eligible in that course's main folder tree. Only ever touches the
+ * reMarkable copies (via setTrashed, which is recoverable from Drive's
+ * own Trash) -- never the originals in your main per-course folders.
+ * Safe to re-run.
+ */
+function pruneRemarkableFolder() {
+  let trashed = 0, kept = 0;
+  COURSES.forEach(function (course) {
+    if (!course.remarkableFolder || course.driveFolderId.indexOf("TODO") === 0) return;
+    const rmFolder = getRemarkableFolder_(course);
+    const eligibleNames = collectEligibleFilenames_(DriveApp.getFolderById(course.driveFolderId), []);
+
+    const files = rmFolder.getFiles();
+    while (files.hasNext()) {
+      const file = files.next();
+      if (eligibleNames.has(file.getName())) {
+        kept++;
+      } else {
+        file.setTrashed(true);
+        trashed++;
+        Logger.log("  trashed (not homework/lecture/case/reading): " + file.getName());
+      }
+    }
+    Logger.log(course.name + ": pruned reMarkable/" + course.remarkableFolder);
+  });
+
+  const summary = trashed + " file(s) trashed from reMarkable mirrors, " + kept + " kept.";
+  Logger.log(summary);
+  return summary;
+}
+
+function collectEligibleFilenames_(folder, pathSoFar) {
+  const names = new Set();
+  const eligible = isRemarkableEligiblePath_(pathSoFar);
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const f = files.next();
+    if (f.getName() === STATE_FILENAME) continue;
+    if (eligible) names.add(f.getName());
+  }
+  const subfolders = folder.getFolders();
+  while (subfolders.hasNext()) {
+    const sub = subfolders.next();
+    union_(names, collectEligibleFilenames_(sub, pathSoFar.concat([sub.getName()])));
+  }
+  return names;
 }
 
 // ---- Canvas discovery --------------------------------------------------
