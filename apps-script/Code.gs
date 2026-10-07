@@ -1,10 +1,10 @@
 /**
- * bCourses -> Google Drive sync, running entirely inside Google Apps
- * Script under your berkeley.edu account. No Cloud Console, no GitHub,
- * no local install -- this sidesteps the 2-Step Verification block on
- * Cloud Console because Apps Script never touches Cloud Console at all;
- * it runs as you, using the same in-browser "Allow" consent Google
- * Docs add-ons use.
+ * bCourses -> Google Drive sync (v5), running entirely inside Google
+ * Apps Script under your berkeley.edu account. No Cloud Console, no
+ * GitHub, no local install -- this sidesteps the 2-Step Verification
+ * block on Cloud Console because Apps Script never touches Cloud
+ * Console at all; it runs as you, using the same in-browser "Allow"
+ * consent Google Docs add-ons use.
  *
  * ---- Per-course classification ----
  *
@@ -12,9 +12,8 @@
  *
  *  - "mirror": Canvas's own Files-tab folder structure is recreated
  *    as-is in Drive (whatever folder names the instructor already
- *    uses -- Homework, Lecture Notes, Case Studies, whatever). Use
- *    this when a course already organizes its Files tab into folders
- *    (Accounting, Leading People).
+ *    uses). Use this when a course already organizes its Files tab
+ *    into folders (Accounting, Leading People).
  *
  *  - "lecture-pages": for courses with no Files-tab folder structure
  *    (Data & Decisions, Econ). Files linked from the Assignments
@@ -22,101 +21,75 @@
  *    Pages (lecture pages) are split by the page's own section
  *    headings: a "Pre-Class Reading" section lands in `Readings`, an
  *    "In-Class Lecture Slides" section lands in `Lecture Notes`. If a
- *    page has no heading Claude can match, its files fall back to
+ *    page has no heading we can match, its files fall back to
  *    filename-based classification instead of a guess.
  *
- * In both modes, anything found but NOT confidently classified (a
- * stray Modules/Announcements/syllabus attachment, or a Files-tab
- * item sitting outside any real subfolder) goes into an
- * `Unsorted - Review` folder per course instead of a guess.
+ * In both modes, anything found but NOT confidently classified goes
+ * into an `Unsorted - Review` folder per course instead of a guess.
+ * Files are stored in their original format: a Word homework file
+ * stays a Word file you can type into.
  *
- * ---- reMarkable mirror (copy, not a replacement) ----
+ * ---- reMarkable folder (v5) ----
  *
- * Every course with a `remarkableFolder` name set also gets a SECOND,
- * flat copy placed under reMarkable/<remarkableFolder> -- one folder
- * per class, no Readings/Homework/Lecture Notes split -- so importing
- * onto the device means opening one folder per class instead of
- * digging through each course's real subfolder structure. This never
- * changes or removes anything from the per-course mirror/lecture-
- * pages structure above; it's purely an additional copy, made with
- * Drive's own file-copy (no re-download, no re-conversion). See
- * REMARKABLE_ROOT_FOLDER_ID below for where the "reMarkable" folder
- * itself lives.
+ * A second copy of selected files is kept under
+ *   MBA/reMarkable/<class>/<Homework | Lecture Notes | Readings & Cases | Exams | Prep>
+ * so importing onto the tablet means opening one tidy folder per class.
+ * The per-course folders above stay the system of record; the
+ * reMarkable tree is a read-only copy this script owns. Rules:
  *
- * NOT everything gets mirrored, though -- only files that land in a
- * Homework, Lecture Notes, Case(s)/Case Studies, Readings/Pre-read, or
- * Exams/exam-prep folder (see REMARKABLE_CATEGORY_KEYWORDS below for
- * the exact keyword match). Anything in Unsorted - Review, or any
- * other folder name that doesn't match one of those five categories,
- * is left out of the reMarkable copy on purpose -- it still syncs
- * normally into the main per-course structure, just not onto the
- * reMarkable mirror.
+ *  1. Only files this script downloaded from bCourses go in -- never
+ *     files you made yourself (anything in a "_" folder such as _Study,
+ *     _My Work, _Notes, _Exam Prep, or files you dropped in by hand).
+ *     So "Homework" means homework the professor posted, nothing else.
+ *     Practice problems go in Homework/Practice Problems; quizzes in Exams.
+ *     The one deliberate exception is Prep (rule 4).
+ *  2. Everything in the reMarkable tree is a PDF. Word and PowerPoint
+ *     files are converted for the reMarkable copy only; the course
+ *     folders keep the original, so Word homework stays editable.
+ *     Excel/CSV files are left out of reMarkable entirely.
+ *  3. The subfolder is chosen from the file's destination folder path
+ *     (see REMARKABLE_CATEGORIES). A file whose path matches no
+ *     category still syncs into the main course folder -- it's just
+ *     not copied to reMarkable.
+ *  4. Prep: dated prep sheets the class-prep skill saves to a course's
+ *     _Study folder ("YYYY-MM-DD – ..." PDFs) are copied into
+ *     reMarkable/<class>/Prep. If a sheet is regenerated with the same
+ *     name, the copy is replaced. Never edit the reMarkable copy; fix
+ *     the _Study original and the next hourly run updates the copy.
  *
- * ---- One-time setup ----
+ * ---- Schedule & email (v5) ----
  *
- * 1. Fill in driveFolderId and mode for each course in COURSES below
- *    (see SETUP_APPSSCRIPT.md step 6 for how to create those folders
- *    and find their IDs).
+ * One hourly trigger runs hourlyRun(): bCourses sync -> prep copy ->
+ * (during the 9 PM Pacific hour) one daily summary email of everything
+ * that arrived since the last email. No email on days nothing arrived.
+ * Overlapping runs are prevented with a script lock.
  *
- * 1b. (Optional) To put the reMarkable mirror folder somewhere specific
- *     (e.g. inside your top-level "Haas MBA Materials" folder instead
- *     of directly in My Drive), paste that parent folder's ID into
- *     REMARKABLE_ROOT_FOLDER_ID below. Leave the TODO placeholder as-is
- *     to skip this -- the script then creates "reMarkable" at the top
- *     level of My Drive automatically, no setup needed.
+ * ---- One-time setup / upgrading to v5 ----
  *
- * 2. Project Settings (gear icon, left sidebar) -> Script Properties ->
- *    add a property:
- *      CANVAS_TOKEN = <your bCourses personal access token>
- *    (CANVAS_BASE_URL defaults to bcourses.berkeley.edu below, so you
- *    don't need to set it unless that's wrong.)
- *
- * 3. Same Project Settings screen -> General -> Time zone ->
- *    America/Los_Angeles.
- *
- * 4. Select `dryRun` in the function dropdown at the top and click Run.
- *    This is the first network call the project makes, so Google will
- *    show an authorization prompt -- click through it and Allow. Check
- *    the execution log (View > Logs, or Ctrl+Enter) for what it found,
- *    including the destination folder path it would use for each file.
- *
- * 5. Once dryRun looks right, run `runSync` once manually the same way
- *    to do a real pass.
- *
- * 5b. Run `backfillRemarkableFolder` once (function dropdown -> Run) to
- *     copy everything already synced from BEFORE the reMarkable mirror
- *     existed. Pure Drive-to-Drive, no Canvas calls -- safe to re-run,
- *     skips anything already copied, and applies the same Homework/
- *     Lecture Notes/Case/Readings/Exam filter runSync uses going
- *     forward.
- *     Everything synced from now on via runSync copies itself
- *     automatically; this is only for the backlog.
- *
- * 5c. If you had already run an earlier version of backfillRemarkableFolder
- *     (the one that copied everything, before the category filter existed),
- *     run `pruneRemarkableFolder` once afterward to remove anything from
- *     the reMarkable folders that doesn't belong under the new filter
- *     (Unsorted - Review, or anything else outside Homework/Lecture
- *     Notes/Case/Readings/Exam). It only trashes copies inside
- *     reMarkable/ -- never touches the original files in your main
- *     per-course folders -- and trashed items still land in Drive's
- *     own Trash, so this is recoverable if it removes something you
- *     actually wanted there.
- *
- * 6. Triggers (clock icon, left sidebar) -> Add Trigger -> function
- *    `runSync` -> Time-driven -> Day timer -> 6am to 7am -> Save.
- *    Then Add Trigger again -> function `runSync` -> Time-driven ->
- *    Day timer -> 9pm to 10pm -> Save. That gives you two checks a
- *    day; Apps Script fires sometime within the chosen hour, not at
- *    an exact minute. From here it runs on its own, no laptop or
- *    GitHub involved.
+ * 1. Fill in driveFolderId and mode for each course in COURSES below.
+ * 2. Project Settings -> Script Properties -> CANVAS_TOKEN = <your
+ *    bCourses personal access token>.
+ * 3. Project Settings -> General -> Time zone -> America/Los_Angeles.
+ * 4. Run `dryRun` (function dropdown -> Run). Check the log: each file
+ *    shows its Drive destination and, if it qualifies, its reMarkable
+ *    subfolder. Changes nothing.
+ * 5. Run `rebuildRemarkable`. It builds the new MBA/reMarkable tree from
+ *    files already synced (plus prep sheets). If the log says
+ *    "NOT FINISHED", run it again until it says "DONE" (Apps Script
+ *    stops any single run at 6 minutes).
+ * 6. Run `installTriggers` once. It deletes the old runSync triggers and
+ *    creates the single hourly trigger for hourlyRun.
+ * 7. Check MBA/reMarkable in Drive, then delete the old top-level
+ *    "reMarkable" folder by hand. This script never deletes it.
  */
 
 // ---- Configuration -------------------------------------------------
 
-// Send yourself a short email only on days something new actually
-// synced (never an empty "nothing happened" email).
+// One daily summary email of new files, sent during this hour (24h,
+// Pacific). Only sent when something new arrived.
 const SEND_EMAIL_SUMMARY = true;
+const DAILY_EMAIL_HOUR = 21; // 9 PM Pacific
+const TIME_ZONE = "America/Los_Angeles";
 
 const COURSES = [
   {
@@ -127,6 +100,10 @@ const COURSES = [
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
     remarkableFolder: "Data and Decisions",
+    // Folders filled from bCourses by the one-off scrub functions below
+    // (not by runSync). Everything in them came from bCourses, so
+    // rebuildRemarkable() includes them.
+    extraSourceFolders: [{ folderId: "1OHkZScCA7HqQ3lVgBkCbI0kY9UtwIl9J", path: ["Exams"] }],
   },
   {
     courseId: 1555514,
@@ -157,10 +134,7 @@ const COURSES = [
   },
 ];
 
-// Where the small sync-state JSON file lives. Defaults to the first
-// course's folder so there's nothing extra to configure; point it at
-// your top-level "Haas MBA Materials" folder ID instead if you'd
-// rather keep it out of a course folder.
+// Where the small sync-state JSON file lives (first course's folder).
 function stateParentFolderId_() {
   return COURSES[0].driveFolderId;
 }
@@ -168,25 +142,92 @@ const STATE_FILENAME = "_bcourses_sync_state.json";
 
 const UNSORTED_FOLDER_NAME = "Unsorted - Review";
 
-// Parent folder the reMarkable mirror tree lives under. Leave the
-// TODO placeholder to have the script create "reMarkable" directly at
-// the top level of My Drive (no setup needed); paste a folder ID here
-// instead if you'd rather it live somewhere specific, e.g. inside your
-// top-level "Haas MBA Materials" folder.
-const REMARKABLE_ROOT_FOLDER_ID = "TODO_PASTE_REMARKABLE_PARENT_FOLDER_ID";
+// The reMarkable tree lives at <REMARKABLE_ROOT_FOLDER_ID>/<REMARKABLE_FOLDER_NAME>.
+// Root = the top-level "MBA" folder in My Drive.
+const REMARKABLE_ROOT_FOLDER_ID = "1pyrnENlT1f4LHlun6c9FC8fmjopSVk90";
+const REMARKABLE_FOLDER_NAME = "reMarkable";
+
+// Each course's own study-output folder, found by name inside the
+// course folder (so folder IDs live in one place: the course folder).
+const STUDY_FOLDER_NAME = "_Study";
+// Prep sheets are named "YYYY-MM-DD – <CODE> – <type> – <topic>.pdf".
+const PREP_NAME_RE = /^\d{4}-\d{2}-\d{2}\s/;
+const PREP_MAX_BYTES = 20 * 1024 * 1024; // skip anything big (e.g. a textbook)
+const PREP_STAMP_PREFIX = "prep-source-updated:";
+
+// reMarkable subfolders, checked IN ORDER against the file's
+// destination folder path (lowercased, segments joined with " / ").
+// First match wins, so "Practice Final" goes to Exams, not elsewhere.
+// Whole-word matching, so "example" never counts as "exam".
+// `folder` is a path inside reMarkable/<class>. `alsoFilename: true`
+// also tests the file's own name (Econ's "Practice Problems 5.pdf"
+// sits in a plain Homework folder but still belongs with practice).
+const REMARKABLE_CATEGORIES = [
+  { folder: ["Exams"], re: /\b(exams?|finals?|midterms?|quiz(zes)?)\b/ },
+  { folder: ["Homework", "Practice Problems"], re: /\bpractice problems?\b/, alsoFilename: true },
+  { folder: ["Homework"], re: /\b(homework|hw\d*|problem sets?|psets?|assignments?)\b/ },
+  { folder: ["Readings & Cases"], re: /\b(readings?|pre-?\s?reads?|pre-?\s?class|cases?|case stud(y|ies)|class materials?)\b/ },
+  { folder: ["Lecture Notes"], re: /\b(lectures?|slides?|notes)\b/ },
+];
+const PREP_SUBFOLDER = "Prep";
+
+// Never copied to reMarkable (no useful PDF form).
+const REMARKABLE_SKIP_EXT = ["xlsx", "xls", "xlsm", "csv"];
+
+// Apps Script stops a run at 6 minutes; long jobs stop themselves
+// before that and pick up where they left off on the next run.
+const TIME_BUDGET_MS = 4.5 * 60 * 1000;
 
 // ---- Entry points ----------------------------------------------------
+
+// What the hourly trigger calls. Installed by installTriggers().
+function hourlyRun() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) {
+    Logger.log("Another run is still going -- skipping this hour.");
+    return;
+  }
+  // Each step runs even if an earlier one fails (e.g. bCourses is down),
+  // so prep copies and the daily email still happen. Any error is
+  // re-thrown at the end so Apps Script's failure email still reaches you.
+  const errors = [];
+  try {
+    [runSync, mirrorPrepToRemarkable, maybeSendDailySummary_].forEach(function (step) {
+      try {
+        step();
+      } catch (e) {
+        Logger.log("Step failed: " + e);
+        errors.push(String(e));
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  if (errors.length) throw new Error(errors.join("\n"));
+}
 
 function runSync() {
   return sync_(/* dry = */ false);
 }
 
-// Reports what WOULD sync (including destination folder path) with
-// zero side effects -- no Drive writes, no state changes, no email.
-// Run this first, and any time you change COURSES, to sanity-check
-// before trusting it with real uploads.
+// Reports what WOULD sync (Drive destination + reMarkable subfolder)
+// with zero side effects -- no Drive writes, no state changes, no email.
 function dryRun() {
   return sync_(/* dry = */ true);
+}
+
+// Run once: removes every existing trigger for runSync/hourlyRun (the
+// old 6-7 AM and 9-10 PM ones included) and creates one hourly trigger.
+function installTriggers() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    const fn = t.getHandlerFunction();
+    if (fn === "runSync" || fn === "hourlyRun") {
+      ScriptApp.deleteTrigger(t);
+      Logger.log("Deleted trigger for " + fn);
+    }
+  });
+  ScriptApp.newTrigger("hourlyRun").timeBased().everyHours(1).create();
+  Logger.log("Created hourly trigger for hourlyRun.");
 }
 
 function sync_(dry) {
@@ -199,6 +240,8 @@ function sync_(dry) {
   }
 
   const state = dry ? {} : loadState_();
+  const fileInfo = dry ? {} : (state._files = state._files || {});
+  const emailLines = [];
   const summaryLines = [];
   let totalNew = 0;
 
@@ -223,12 +266,9 @@ function sync_(dry) {
       if (synced.has(fid)) return;
 
       const meta = getFileMetadata_(baseUrl, token, fid);
-      // Canvas can return 200 with real metadata for a file that's
-      // still locked for you (a date-locked reading, or one behind a
-      // module prerequisite you haven't completed) -- in that case it
-      // omits `url` rather than returning 403/404. Treat a missing url
-      // the same as an inaccessible file: skip it now, leave it out of
-      // `synced`, and pick it up automatically once it unlocks.
+      // Canvas can return real metadata for a file that's still locked
+      // (date-locked, or behind a module prerequisite) -- it omits `url`
+      // then. Skip it for now; it's picked up once it unlocks.
       if (!meta || !meta.url) return;
 
       const fname = meta.display_name;
@@ -239,65 +279,43 @@ function sync_(dry) {
 
       const entry = destinations[fid];
       const destPath = entry.kind === "ambiguous" ? classifyStrayPath_(fname) : entry.path;
+      // Files keep their original format in the course folders (Word
+      // homework stays editable). Only the reMarkable copy is a PDF.
+      const uploadName = fname;
+      const rmTarget = course.remarkableFolder ? remarkablePlan_(destPath, uploadName) : null;
 
       newCount++;
-      Logger.log((dry ? "  WOULD SYNC: " : "  NEW: ") + destPath.join("/") + "/" + fname);
+      Logger.log(
+        (dry ? "  WOULD SYNC: " : "  NEW: ") + destPath.join("/") + "/" + fname +
+        (rmTarget ? "   [reMarkable: " + rmTarget.folder.join("/") + "/" + rmTarget.name + "]" : "   [not for reMarkable]")
+      );
 
       if (!dry) {
         const courseRoot = DriveApp.getFolderById(course.driveFolderId);
         const folder = getOrCreateFolderPath_(courseRoot, destPath);
 
-        // Word docs get converted to PDF before landing in Drive --
-        // PDF is what's actually usable once it reaches the reMarkable
-        // side of things, and a .docx is not. This changes the stored
-        // filename's extension, so the "already there" check below
-        // has to test against that final name, not the original one.
-        const isWord = /\.docx?$/i.test(fname);
-        const uploadName = isWord ? fname.replace(/\.docx?$/i, ".pdf") : fname;
-
-        // Belt-and-suspenders against the state file and Drive's actual
-        // contents ever disagreeing (exactly what a mid-run crash can
-        // cause): check Drive itself, not just our own bookkeeping,
-        // before uploading. A same-name match is treated as "already
-        // there" and skipped, so a crash-and-retry can no longer
-        // produce duplicate copies.
+        // Check Drive itself (not just our state) before uploading, so a
+        // crash-and-retry never creates duplicates.
         let mainFile;
-        if (folder.getFilesByName(uploadName).hasNext()) {
+        const existing = folder.getFilesByName(uploadName);
+        if (existing.hasNext()) {
           Logger.log("  (already in Drive, skipping): " + uploadName);
-          mainFile = folder.getFilesByName(uploadName).next();
+          mainFile = existing.next();
         } else {
           const resp = UrlFetchApp.fetch(meta.url, { muteHttpExceptions: true });
-          const rawBlob = resp.getBlob();
-          const finalBlob = isWord
-            ? convertDocxToPdf_(rawBlob.getBytes(), fname).setName(uploadName)
-            : rawBlob.setName(uploadName);
-          mainFile = folder.createFile(finalBlob);
+          mainFile = folder.createFile(resp.getBlob().setName(uploadName));
         }
 
-        // Mirror the same file, flat, into reMarkable/<class> -- see
-        // the "reMarkable mirror" note at the top of this file. Only
-        // for files landing in a Homework/Lecture Notes/Case/Readings/Exam
-        // folder -- isRemarkableEligiblePath_ is the filter. A plain
-        // Drive-to-Drive copy (makeCopy), not a re-download: by this
-        // point mainFile is already the final PDF if it started out
-        // as a Word doc, so the copy is too. Checked by filename the
-        // same way the main folder is, so re-runs never duplicate.
-        if (course.remarkableFolder && isRemarkableEligiblePath_(destPath)) {
-          const rmFolder = getRemarkableFolder_(course);
-          if (!rmFolder.getFilesByName(uploadName).hasNext()) {
-            mainFile.makeCopy(uploadName, rmFolder);
-            Logger.log("  -> copied into reMarkable/" + course.remarkableFolder);
-          }
+        if (course.remarkableFolder) {
+          const copied = copyToRemarkable_(course, mainFile, destPath);
+          if (copied) Logger.log("  -> reMarkable/" + course.remarkableFolder + "/" + copied);
         }
 
+        emailLines.push("[" + course.remarkableFolder + "] " + destPath.join("/") + " <- " + uploadName);
         synced.add(fid);
-        // Saved after EVERY successful upload, not just at the end of
-        // the course. A first sync can be a large backlog, each upload
-        // takes real time, and an unhandled error partway through (a
-        // Canvas quirk, a flaky network call) is a real possibility,
-        // not a hypothetical. Without per-file saving, retrying after
-        // a crash would re-download and duplicate every file that had
-        // already succeeded.
+        fileInfo[fid] = { n: uploadName, p: destPath, d: mainFile.getId() };
+        // Saved after EVERY upload so a mid-run crash never causes
+        // duplicate re-downloads on retry.
         state[cid] = Array.from(synced);
         saveState_(state);
       }
@@ -312,15 +330,7 @@ function sync_(dry) {
     Logger.log("  -> " + newCount + (dry ? " file(s) would sync." : " new file(s) synced."));
   });
 
-  if (!dry) {
-    if (SEND_EMAIL_SUMMARY && totalNew > 0) {
-      MailApp.sendEmail(
-        Session.getActiveUser().getEmail(),
-        "bCourses sync: " + totalNew + " new file(s)",
-        summaryLines.join("\n")
-      );
-    }
-  }
+  if (!dry && emailLines.length) queueEmailLines_(emailLines);
 
   const summary = summaryLines.join("\n") + "\n\nTotal: " + totalNew;
   Logger.log(summary);
@@ -361,9 +371,7 @@ function discoverForMirrorCourse_(baseUrl, token, courseId) {
   });
 
   // Safety net: anything only reachable via modules/pages/assignments/
-  // announcements/syllabus (not filed into a Files folder at all) --
-  // Accounting and Leading People mostly won't need this, but nothing
-  // gets silently dropped if a file lives outside the Files tab.
+  // announcements/syllabus (not filed into a Files folder at all).
   discoverSecondaryFileIds_(baseUrl, token, courseId).forEach(function (fid) {
     if (!(fid in results)) results[fid] = { kind: "ambiguous" };
   });
@@ -384,11 +392,7 @@ function discoverForLecturePagesCourse_(baseUrl, token, courseId) {
     });
   });
 
-  // Lecture Pages: split by the page's own section headings rather
-  // than dumping the whole page into one bucket -- "Pre-Class Reading"
-  // sections go to Readings, "In-Class ... Slides" sections go to
-  // Lecture Notes. A page with no heading we can confidently match
-  // falls back to filename-based classification (kind: "ambiguous").
+  // Lecture Pages: split by the page's own section headings.
   canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages", { per_page: 100 }).forEach(function (p) {
     const detail = canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages/" + p.url);
     if (!detail[0]) return;
@@ -400,9 +404,7 @@ function discoverForLecturePagesCourse_(baseUrl, token, courseId) {
     });
   });
 
-  // Everything else -- direct Files-tab items, module file items,
-  // announcements, syllabus -- has no reliable signal here, so it's
-  // classified by filename once metadata is fetched.
+  // Everything else is classified by filename once metadata is fetched.
   canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/files", { per_page: 100 }).forEach(function (f) {
     claim(String(f.id), { kind: "ambiguous" });
   });
@@ -416,22 +418,17 @@ function discoverForLecturePagesCourse_(baseUrl, token, courseId) {
 function classifyStrayPath_(filename) {
   const lower = (filename || "").toLowerCase();
   const homeworkKw = ["homework", "hw", "problem set", "pset", "assignment", "solution", "submission"];
-  const readingKw = ["reading", "pre-class", "preclass", "pre class"];
-  const lectureKw = ["lecture", "slide", "notes", "case"];
+  const readingKw = ["reading", "pre-class", "preclass", "pre class", "case"];
+  const lectureKw = ["lecture", "slide", "notes"];
   if (homeworkKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return ["Homework"];
   if (readingKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return ["Readings"];
   if (lectureKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return ["Lecture Notes"];
   return [UNSORTED_FOLDER_NAME];
 }
 
-// Splits a Canvas Page's raw HTML body into chunks at each heading tag
-// (<h1>-<h4>), pairing each chunk with the heading text that precedes
-// it. The first chunk (before any heading) carries headingText "".
-// Regex-based rather than a real HTML parser -- Apps Script has no
-// DOMParser and Canvas's RCE output isn't guaranteed well-formed XML --
-// but Canvas page headings are reliably <hN> tags, so this holds up
-// for the common case and degrades to "ambiguous" (never a silent
-// misfile) when a page doesn't use headings at all.
+// Splits a Canvas Page's HTML into chunks at each <h1>-<h4>, pairing
+// each chunk with the heading text before it. Regex-based (Apps Script
+// has no DOMParser); degrades to "ambiguous" when a page has no headings.
 const HEADING_RE = /<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi;
 
 function splitPageIntoSections_(html) {
@@ -474,174 +471,276 @@ function getOrCreateFolderPath_(rootFolder, pathSegments) {
   return folder;
 }
 
-// ---- reMarkable mirror folder --------------------------------------
-// A second, flat (no Readings/Homework/Lecture Notes split) copy of
-// everything, organized as reMarkable/<class>, so pulling material
-// onto the device means opening one folder per class instead of
-// hunting through each course's real subfolder structure. Copy-only:
-// the per-course mirror/lecture-pages structure above is unchanged
-// and remains the system of record. Note: because this is flat, two
-// different files in the same course that happen to share an exact
-// filename (rare, but possible across different source subfolders)
-// will collide here -- only the first one copied survives under that
-// name. Nothing is lost from the main per-course structure either way.
-
-function remarkableRootFolder_() {
-  if (REMARKABLE_ROOT_FOLDER_ID && REMARKABLE_ROOT_FOLDER_ID.indexOf("TODO") !== 0) {
-    return DriveApp.getFolderById(REMARKABLE_ROOT_FOLDER_ID);
+// Like getOrCreateFolderPath_, but never creates anything; null if missing.
+function findFolderPath_(rootFolder, pathSegments) {
+  let folder = rootFolder;
+  for (let i = 0; i < pathSegments.length; i++) {
+    const it = folder.getFoldersByName(pathSegments[i]);
+    if (!it.hasNext()) return null;
+    folder = it.next();
   }
-  return DriveApp.getRootFolder(); // no parent configured -- top level of My Drive
+  return folder;
 }
 
-function getRemarkableFolder_(course) {
-  return getOrCreateFolderPath_(remarkableRootFolder_(), ["reMarkable", course.remarkableFolder]);
-}
+// ---- reMarkable folder ----------------------------------------------
 
-// Which categories actually get mirrored to reMarkable: homework
-// assignments, lecture notes/slides, cases, pre-read/readings, and
-// exams/exam-prep (including the dedicated Exams folder the
-// scrubPracticeMaterials* functions below feed). Everything else
-// (Unsorted - Review, or any other folder name an instructor happens
-// to use) still syncs into the main per-course structure as always --
-// it's just left out of the reMarkable copy. Matched against the full
-// destination path joined together, case-insensitive, so it works for
-// both the fixed "lecture-pages" labels (Homework/Readings/Lecture
-// Notes) and whatever folder names a "mirror" course's instructor
-// actually used (e.g. "Case Studies", "Slides", "Pre-reads"), plus the
-// "Exams" folder created for the practice-materials scrub.
-const REMARKABLE_CATEGORY_KEYWORDS = {
-  homework: ["homework", "hw", "problem set", "pset", "assignment"],
-  lecture: ["lecture", "slide", "notes"],
-  case: ["case"],
-  reading: ["reading", "pre-read", "preread", "pre class", "pre-class"],
-  exam: ["exam", "final", "midterm", "practice final", "practice exam"],
-};
-
-function isRemarkableEligiblePath_(pathSegments) {
+// Which reMarkable subfolder (as a path array) a file belongs in, or null.
+function remarkableCategory_(pathSegments, filename) {
   const joined = (pathSegments || []).join(" / ").toLowerCase();
-  return Object.keys(REMARKABLE_CATEGORY_KEYWORDS).some(function (cat) {
-    return REMARKABLE_CATEGORY_KEYWORDS[cat].some(function (kw) {
-      return joined.indexOf(kw) !== -1;
-    });
-  });
+  const withName = joined + " / " + (filename || "").toLowerCase().replace(/[_.]/g, " ");
+  for (let i = 0; i < REMARKABLE_CATEGORIES.length; i++) {
+    const cat = REMARKABLE_CATEGORIES[i];
+    if (cat.re.test(cat.alsoFilename ? withName : joined)) return cat.folder;
+  }
+  return null;
+}
+
+function fileExt_(name) {
+  const dot = (name || "").lastIndexOf(".");
+  return dot === -1 ? "" : name.substring(dot + 1).toLowerCase();
+}
+
+// Where a file would land in reMarkable: {folder, name} or null.
+function remarkablePlan_(pathSegments, filename) {
+  const folder = remarkableCategory_(pathSegments, filename);
+  if (!folder) return null;
+  const ext = fileExt_(filename);
+  if (REMARKABLE_SKIP_EXT.indexOf(ext) !== -1) return null;
+  if (ext !== "pdf" && !isOfficeConvertible_(filename)) return null;
+  return { folder: folder, name: ext === "pdf" ? filename : filename.replace(/\.[^.]+$/, ".pdf") };
+}
+
+function isOfficeConvertible_(filename) {
+  return /\.(docx?|pptx?)$/i.test(filename || "");
+}
+
+function remarkableClassFolder_(course) {
+  const root = DriveApp.getFolderById(REMARKABLE_ROOT_FOLDER_ID);
+  return getOrCreateFolderPath_(root, [REMARKABLE_FOLDER_NAME, course.remarkableFolder]);
+}
+
+// Copies one Drive file into reMarkable/<class>/<category> as a PDF.
+// Returns "<category>/<name>" if a copy was made, else null. Skips if
+// a file with that name is already there.
+function copyToRemarkable_(course, file, pathSegments) {
+  const plan = remarkablePlan_(pathSegments, file.getName());
+  if (!plan) return null;
+  const target = getOrCreateFolderPath_(remarkableClassFolder_(course), plan.folder);
+  if (target.getFilesByName(plan.name).hasNext()) return null;
+  writePdfCopy_(file, target, plan.name);
+  return plan.folder.join("/") + "/" + plan.name;
+}
+
+function writePdfCopy_(file, targetFolder, pdfName) {
+  if (fileExt_(file.getName()) === "pdf") {
+    file.makeCopy(pdfName, targetFolder);
+  } else {
+    const pdf = convertOfficeToPdf_(file.getBlob().getBytes(), file.getName()).setName(pdfName);
+    targetFolder.createFile(pdf);
+  }
 }
 
 /**
- * ONE-OFF: backfills the reMarkable mirror for files that were synced
- * BEFORE that feature existed (runSync only ever copies files it is
- * uploading for the first time, so anything already synced would
- * otherwise never get mirrored). Pure Drive-to-Drive -- walks each
- * course's existing Drive folder tree (every subfolder, recursively,
- * tracking the folder-name path as it goes) and copies anything that
- * (a) matches the Homework/Lecture Notes/Case/Readings/Exam filter above
- * and (b) isn't already present (by filename) into the matching flat
- * reMarkable/<class> folder. No Canvas calls, so this is cheap and
- * safe to re-run.
+ * Copies dated prep sheets from each course's _Study folder into
+ * reMarkable/<class>/Prep. Runs every hour from hourlyRun(); safe to
+ * run by hand. A regenerated sheet (same name, newer than the copy)
+ * replaces the old copy (old one goes to Drive's Trash).
  */
-function backfillRemarkableFolder() {
-  let copied = 0, skipped = 0, ineligible = 0;
+function mirrorPrepToRemarkable() {
+  const lines = [];
   COURSES.forEach(function (course) {
     if (!course.remarkableFolder || course.driveFolderId.indexOf("TODO") === 0) return;
-    const rmFolder = getRemarkableFolder_(course);
-    const rmFolderId = rmFolder.getId();
+    const study = findFolderPath_(DriveApp.getFolderById(course.driveFolderId), [STUDY_FOLDER_NAME]);
+    if (!study) return;
+    let prepFolder = null;
 
-    function walk(folder, pathSoFar) {
-      const eligible = isRemarkableEligiblePath_(pathSoFar);
-      const files = folder.getFiles();
-      while (files.hasNext()) {
-        const file = files.next();
-        if (file.getName() === STATE_FILENAME) continue;
-        if (!eligible) {
-          ineligible++;
+    const files = study.getFiles();
+    while (files.hasNext()) {
+      const f = files.next();
+      const name = f.getName();
+      if (!PREP_NAME_RE.test(name) || fileExt_(name) !== "pdf" || f.getSize() > PREP_MAX_BYTES) continue;
+      if (!prepFolder) prepFolder = getOrCreateFolderPath_(remarkableClassFolder_(course), [PREP_SUBFOLDER]);
+
+      // Each copy records the original's "last updated" time in its
+      // description, so a regenerated original is spotted reliably.
+      const srcStamp = String(f.getLastUpdated().getTime());
+      const existing = prepFolder.getFilesByName(name);
+      let updated = false;
+      if (existing.hasNext()) {
+        const copy = existing.next();
+        if (copy.getDescription() === PREP_STAMP_PREFIX + srcStamp) continue; // up to date
+        copy.setTrashed(true);
+        updated = true;
+      }
+      f.makeCopy(name, prepFolder).setDescription(PREP_STAMP_PREFIX + srcStamp);
+      lines.push("[" + course.remarkableFolder + "] Prep" + (updated ? " (updated)" : "") + " <- " + name);
+    }
+  });
+  lines.forEach(function (l) { Logger.log(l); });
+  if (lines.length) queueEmailLines_(lines);
+  return lines.length + " prep sheet(s) copied or updated.";
+}
+
+/**
+ * Builds the reMarkable tree from files ALREADY synced -- use once after
+ * upgrading to v5 (or after changing REMARKABLE_CATEGORIES). It also
+ * downloads the editable original of any Word file that older versions
+ * stored only as a PDF, so Word homework is back in the course folder. Asks
+ * bCourses which files exist and where they belong, finds each one in
+ * Drive, and copies the qualifying ones. Because the list comes from
+ * bCourses, nothing you made yourself can sneak in. Also copies the
+ * scrub-filled folders (extraSourceFolders) and prep sheets.
+ *
+ * Stops itself before Apps Script's 6-minute limit. If the log ends
+ * with "NOT FINISHED", run it again; already-copied files are skipped.
+ */
+function rebuildRemarkable() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) throw new Error("The hourly sync is running right now -- try again in a few minutes.");
+  try {
+    return rebuildRemarkable_();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function rebuildRemarkable_() {
+  const start = Date.now();
+  const baseUrl = getProp_("CANVAS_BASE_URL", "https://bcourses.berkeley.edu").replace(/\/$/, "");
+  const token = getProp_("CANVAS_TOKEN", null);
+  if (!token) throw new Error("CANVAS_TOKEN is not set.");
+
+  const state = loadState_();
+  const fileInfo = (state._files = state._files || {});
+  let copied = 0, notFound = 0, restored = 0, outOfTime = false;
+
+  for (let c = 0; c < COURSES.length && !outOfTime; c++) {
+    const course = COURSES[c];
+    if (!course.remarkableFolder || course.driveFolderId.indexOf("TODO") === 0) continue;
+    const cid = String(course.courseId);
+    const synced = new Set(state[cid] || []);
+    const courseRoot = DriveApp.getFolderById(course.driveFolderId);
+    Logger.log("=== " + course.name + " ===");
+
+    const destinations = discoverDestinations_(baseUrl, token, course);
+    const fids = Object.keys(destinations).filter(function (fid) { return synced.has(fid); });
+
+    for (let i = 0; i < fids.length; i++) {
+      if (Date.now() - start > TIME_BUDGET_MS) { outOfTime = true; break; }
+      const fid = fids[i];
+      let info = fileInfo[fid];
+      if (info && info.skip) continue;
+
+      if (!info) {
+        const meta = getFileMetadata_(baseUrl, token, fid);
+        if (!meta || !meta.display_name) continue;
+        const fname = meta.display_name;
+        if (!matchesFilters_(fname, course.includeExt, course.excludeKeywords)) {
+          fileInfo[fid] = { skip: true };
           continue;
         }
-        if (rmFolder.getFilesByName(file.getName()).hasNext()) {
-          skipped++;
-        } else {
-          file.makeCopy(file.getName(), rmFolder);
-          copied++;
+        const entry = destinations[fid];
+        const destPath = entry.kind === "ambiguous" ? classifyStrayPath_(fname) : entry.path;
+        info = { n: fname, p: destPath };
+        fileInfo[fid] = info;
+      }
+
+      let file = info.d ? safeGetFile_(info.d) : null;
+      if (!file || file.getName() !== info.n) {
+        const folder = findFolderPath_(courseRoot, info.p);
+        file = null;
+        if (folder) {
+          const it = folder.getFilesByName(info.n);
+          if (it.hasNext()) {
+            file = it.next();
+          } else if (/\.docx?$/i.test(info.n)) {
+            // Before v5, Word files were stored only as converted PDFs.
+            // Fetch the editable Word original into the course folder
+            // (the old PDF is left where it is).
+            const meta = getFileMetadata_(baseUrl, token, fid);
+            if (meta && meta.url) {
+              file = folder.createFile(UrlFetchApp.fetch(meta.url, { muteHttpExceptions: true }).getBlob().setName(info.n));
+              restored++;
+              Logger.log("  restored Word original: " + info.p.join("/") + "/" + info.n);
+            }
+          }
         }
+        if (file) info.d = file.getId();
       }
-      const subfolders = folder.getFolders();
-      while (subfolders.hasNext()) {
-        const sub = subfolders.next();
-        if (sub.getId() === rmFolderId) continue; // don't walk into reMarkable's own tree
-        walk(sub, pathSoFar.concat([sub.getName()]));
-      }
+      if (!remarkablePlan_(info.p, info.n)) continue; // not a reMarkable category / Excel
+      if (!file) { notFound++; continue; }
+
+      const done = copyToRemarkable_(course, file, info.p);
+      if (done) { copied++; Logger.log("  -> " + done); }
     }
+    saveState_(state);
 
-    walk(DriveApp.getFolderById(course.driveFolderId), []);
-    Logger.log(course.name + ": backfilled eligible files into reMarkable/" + course.remarkableFolder);
-  });
+    (course.extraSourceFolders || []).forEach(function (src) {
+      if (outOfTime) return;
+      const files = DriveApp.getFolderById(src.folderId).getFiles();
+      while (files.hasNext()) {
+        if (Date.now() - start > TIME_BUDGET_MS) { outOfTime = true; return; }
+        const done = copyToRemarkable_(course, files.next(), src.path);
+        if (done) { copied++; Logger.log("  -> " + done); }
+      }
+    });
+  }
 
-  const summary =
-    copied + " file(s) copied, " + skipped + " already present, " +
-    ineligible + " skipped (not homework/lecture/case/reading/exam).";
+  if (!outOfTime) mirrorPrepToRemarkable();
+
+  const summary = copied + " file(s) copied, " + restored + " Word original(s) restored, " + notFound + " not found in Drive. " +
+    (outOfTime ? "NOT FINISHED -- run rebuildRemarkable again." : "DONE.");
   Logger.log(summary);
   return summary;
 }
 
-/**
- * ONE-OFF cleanup: if you ran an earlier version of backfillRemarkableFolder
- * (back when it copied everything, before the category filter above
- * existed), this removes anything from the reMarkable/<class> folders
- * that doesn't belong under the current filter -- cross-checking each
- * file there against whether a same-named file exists somewhere
- * eligible in that course's main folder tree. Only ever touches the
- * reMarkable copies (via setTrashed, which is recoverable from Drive's
- * own Trash) -- never the originals in your main per-course folders.
- * Safe to re-run.
- */
-function pruneRemarkableFolder() {
-  let trashed = 0, kept = 0;
-  COURSES.forEach(function (course) {
-    if (!course.remarkableFolder || course.driveFolderId.indexOf("TODO") === 0) return;
-    const rmFolder = getRemarkableFolder_(course);
-    const eligibleNames = collectEligibleFilenames_(DriveApp.getFolderById(course.driveFolderId), []);
-
-    const files = rmFolder.getFiles();
-    while (files.hasNext()) {
-      const file = files.next();
-      if (eligibleNames.has(file.getName())) {
-        kept++;
-      } else {
-        file.setTrashed(true);
-        trashed++;
-        Logger.log("  trashed (not homework/lecture/case/reading/exam): " + file.getName());
-      }
-    }
-    Logger.log(course.name + ": pruned reMarkable/" + course.remarkableFolder);
-  });
-
-  const summary = trashed + " file(s) trashed from reMarkable mirrors, " + kept + " kept.";
-  Logger.log(summary);
-  return summary;
+function safeGetFile_(id) {
+  try {
+    const f = DriveApp.getFileById(id);
+    return f.isTrashed() ? null : f;
+  } catch (e) {
+    return null;
+  }
 }
 
-function collectEligibleFilenames_(folder, pathSoFar) {
-  const names = new Set();
-  const eligible = isRemarkableEligiblePath_(pathSoFar);
-  const files = folder.getFiles();
-  while (files.hasNext()) {
-    const f = files.next();
-    if (f.getName() === STATE_FILENAME) continue;
-    if (eligible) names.add(f.getName());
+// ---- Daily summary email --------------------------------------------
+// Each run adds what it did to a queue in the state file; the run that
+// lands in the DAILY_EMAIL_HOUR sends one email and clears the queue.
+
+function queueEmailLines_(lines) {
+  if (!SEND_EMAIL_SUMMARY) return;
+  const state = loadState_();
+  state._emailQueue = (state._emailQueue || []).concat(lines).slice(-500);
+  saveState_(state);
+}
+
+function maybeSendDailySummary_() {
+  if (!SEND_EMAIL_SUMMARY) return;
+  const now = new Date();
+  const hour = Number(Utilities.formatDate(now, TIME_ZONE, "H"));
+  const today = Utilities.formatDate(now, TIME_ZONE, "yyyy-MM-dd");
+  const props = PropertiesService.getScriptProperties();
+  if (hour < DAILY_EMAIL_HOUR || props.getProperty("LAST_SUMMARY_DATE") === today) return;
+
+  const state = loadState_();
+  const queue = state._emailQueue || [];
+  if (queue.length) {
+    MailApp.sendEmail(
+      Session.getActiveUser().getEmail(),
+      "bCourses sync: " + queue.length + " new item(s) (" + today + ")",
+      "New since the last summary:\n\n" + queue.join("\n") +
+        "\n\nreMarkable copies are in MBA/" + REMARKABLE_FOLDER_NAME + "."
+    );
+    state._emailQueue = [];
+    saveState_(state);
   }
-  const subfolders = folder.getFolders();
-  while (subfolders.hasNext()) {
-    const sub = subfolders.next();
-    union_(names, collectEligibleFilenames_(sub, pathSoFar.concat([sub.getName()])));
-  }
-  return names;
+  props.setProperty("LAST_SUMMARY_DATE", today); // only one check per day, sent or not
 }
 
 // ---- Canvas discovery --------------------------------------------------
-// Same approach as a Berkeley classmate's bcourses-cli tool: many
-// instructors switch the Files tab off entirely (Canvas returns 403 for
-// that -- routine, not an error), while the same PDFs are still linked
-// from module items, page bodies, assignment descriptions, announcements,
-// or the syllabus. Hitting only /files misses those; this walks all of
-// the above and merges the file IDs it finds.
+// Many instructors switch the Files tab off (Canvas returns 403 --
+// routine), while the same PDFs are still linked from modules, pages,
+// assignments, announcements or the syllabus. This walks all of them.
 
 function canvasGet_(baseUrl, token, path, params) {
   let url = path.indexOf("http") === 0 ? path : baseUrl + path;
@@ -686,6 +785,9 @@ function canvasGet_(baseUrl, token, path, params) {
 
 const FILE_LINK_RE = /\/files\/(\d+)/g;
 
+// File IDs linked from a chunk of HTML. Links under /users/ (files
+// students attach to discussion posts etc.) are ignored, so only course
+// files the instructor posted are picked up.
 function extractFileIds_(html) {
   const ids = new Set();
   if (!html) return ids;
@@ -705,9 +807,7 @@ function union_(a, b) {
   return a;
 }
 
-// Full secondary sweep -- modules, pages, assignments, announcements,
-// syllabus -- used as the "don't lose anything" safety net for mirror
-// courses (which don't otherwise scan these sources at all).
+// Full secondary sweep for mirror courses.
 function discoverSecondaryFileIds_(baseUrl, token, courseId) {
   const ids = new Set();
 
@@ -738,10 +838,8 @@ function discoverSecondaryFileIds_(baseUrl, token, courseId) {
   return ids;
 }
 
-// Lean sweep -- just modules, announcements, syllabus -- used by
-// lecture-pages courses, which already scan pages/assignments
-// separately for confident classification and don't need those two
-// fetched a second time.
+// Lean sweep -- modules, announcements, syllabus -- for lecture-pages
+// courses, which already scan pages/assignments separately.
 function discoverModulesAnnouncementsSyllabusIds_(baseUrl, token, courseId) {
   const ids = new Set();
 
@@ -781,8 +879,7 @@ function getFileMetadata_(baseUrl, token, fileId) {
 }
 
 function matchesFilters_(filename, includeExt, excludeKeywords) {
-  const dot = filename.lastIndexOf(".");
-  const ext = dot === -1 ? "" : filename.substring(dot + 1).toLowerCase();
+  const ext = fileExt_(filename);
   if (includeExt && includeExt.indexOf(ext) === -1) return false;
   const lower = filename.toLowerCase();
   return !(excludeKeywords || []).some(function (kw) {
@@ -790,35 +887,30 @@ function matchesFilters_(filename, includeExt, excludeKeywords) {
   });
 }
 
-// ---- Word -> PDF conversion --------------------------------------------
-// Deliberately avoids the Advanced Drive Service (Apps Script's "Services
-// +" panel) since enabling it can, on some setups, bounce you back into
-// Cloud Console -- exactly what we're trying to stay away from. This
-// instead calls the plain Drive v3 REST API directly with the token the
-// script already has (the same permission DriveApp itself uses), asking
-// Drive to convert an uploaded .docx into a native Google Doc, exporting
-// that as a PDF, and deleting the intermediate Google Doc so only the
-// PDF is left behind in your course folder.
+// ---- Office -> PDF conversion ----------------------------------------
+// Avoids the Advanced Drive Service (enabling it can bounce you into
+// Cloud Console). Calls the plain Drive v3 REST API with the script's
+// own token: upload the Office file asking Drive to convert it to a
+// Google Doc/Slides file, export that as PDF, then trash the temp file.
 
-function convertDocxToPdf_(bytes, originalFilename) {
-  const boundary = "bcourses_sync_boundary";
-  const metadata = {
-    name: originalFilename,
-    mimeType: "application/vnd.google-apps.document", // asks Drive to convert on upload
+function convertOfficeToPdf_(bytes, originalFilename) {
+  const ext = fileExt_(originalFilename);
+  const types = {
+    doc: ["application/msword", "application/vnd.google-apps.document"],
+    docx: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.google-apps.document"],
+    ppt: ["application/vnd.ms-powerpoint", "application/vnd.google-apps.presentation"],
+    pptx: ["application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/vnd.google-apps.presentation"],
   };
-  // Legacy .doc (binary format) and modern .docx use different source
-  // MIME types -- Drive's conversion is more reliable when this
-  // matches the file's actual format rather than always assuming .docx.
-  const sourceMimeType = /\.doc$/i.test(originalFilename)
-    ? "application/msword"
-    : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (!types[ext]) throw new Error("Can't convert ." + ext + " to PDF: " + originalFilename);
 
+  const boundary = "bcourses_sync_boundary";
+  const metadata = { name: originalFilename, mimeType: types[ext][1] };
   const bodyString =
     "--" + boundary + "\r\n" +
     "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
     JSON.stringify(metadata) + "\r\n" +
     "--" + boundary + "\r\n" +
-    "Content-Type: " + sourceMimeType + "\r\n" +
+    "Content-Type: " + types[ext][0] + "\r\n" +
     "Content-Transfer-Encoding: base64\r\n\r\n" +
     Utilities.base64Encode(bytes) + "\r\n" +
     "--" + boundary + "--";
@@ -834,21 +926,21 @@ function convertDocxToPdf_(bytes, originalFilename) {
     }
   );
   if (createResp.getResponseCode() >= 300) {
-    throw new Error("Docx-to-Doc conversion failed: " + createResp.getContentText());
+    throw new Error("Office-to-Google conversion failed: " + createResp.getContentText());
   }
 
-  const tempDocId = JSON.parse(createResp.getContentText()).id;
-  const tempDoc = DriveApp.getFileById(tempDocId);
+  const tempId = JSON.parse(createResp.getContentText()).id;
+  const temp = DriveApp.getFileById(tempId);
   try {
-    return tempDoc.getAs(MimeType.PDF);
+    return temp.getAs(MimeType.PDF);
   } finally {
-    tempDoc.setTrashed(true); // clean up the intermediate Google Doc either way
+    temp.setTrashed(true); // clean up the intermediate Google file either way
   }
 }
 
 // ---- State: a small JSON file kept in Drive itself ----------------------
-// (Not Script Properties -- those cap out around 9KB per value, which a
-// semester's worth of synced file IDs could realistically approach.)
+// { "<courseId>": [canvas file ids], "_files": {canvasId: {n, p, d}},
+//   "_emailQueue": [lines] }
 
 function loadState_() {
   const file = findStateFile_();
@@ -866,11 +958,7 @@ function saveState_(state) {
   if (file) {
     file.setContent(content);
   } else {
-    DriveApp.getFolderById(stateParentFolderId_()).createFile(
-      STATE_FILENAME,
-      content,
-      MimeType.PLAIN_TEXT
-    );
+    DriveApp.getFolderById(stateParentFolderId_()).createFile(STATE_FILENAME, content, MimeType.PLAIN_TEXT);
   }
 }
 
@@ -886,21 +974,44 @@ function getProp_(key, fallback) {
   return v === null ? fallback : v;
 }
 
+function courseById_(courseId) {
+  return COURSES.filter(function (c) { return c.courseId === courseId; })[0];
+}
+
+// Shared by the two scrub functions: download each Canvas file into the
+// given folder (skipping names already there), and copy it to reMarkable.
+function scrubFilesInto_(baseUrl, token, course, folder, destPath, ids) {
+  let uploaded = 0, skipped = 0, locked = 0;
+  ids.forEach(function (fid) {
+    const meta = getFileMetadata_(baseUrl, token, String(fid));
+    if (!meta || !meta.url) { locked++; Logger.log("  locked/inaccessible: file " + fid); return; }
+
+    const uploadName = meta.display_name;
+
+    let file;
+    const existing = folder.getFilesByName(uploadName);
+    if (existing.hasNext()) {
+      skipped++;
+      file = existing.next();
+    } else {
+      file = folder.createFile(UrlFetchApp.fetch(meta.url, { muteHttpExceptions: true }).getBlob().setName(uploadName));
+      uploaded++;
+      Logger.log("  uploaded: " + uploadName);
+    }
+    if (course && course.remarkableFolder) copyToRemarkable_(course, file, destPath);
+  });
+  const summary = uploaded + " uploaded, " + skipped + " already there, " + locked + " locked/inaccessible.";
+  Logger.log(summary);
+  return summary;
+}
+
 /**
  * ONE-OFF: pulls every file linked from the Data & Decisions "Practice
- * Materials" and "More Practice Materials" pages into a fixed Drive
- * folder. Not part of the daily runSync -- these two pages are invisible
- * to the normal crawl because the Pages tab is hidden for students on
- * this course (same kind of tab-toggle-off Canvas does for Files), and
- * neither page is linked from any Module either, so there is no path
- * the normal discovery can reach them by. Fetching a page directly BY
- * SLUG still works even with the tab hidden -- it's only the *listing*
- * that's blocked -- which is what this relies on.
- *
- * Covers 2023 and earlier plus the "More Practice Materials" quiz
- * archive; scrubPracticeMaterials2024_2025() below already covers 2024
- * and 2025. Safe to re-run -- checks the destination folder by filename
- * before uploading, so nothing duplicates.
+ * Materials" and "More Practice Materials" pages into Data & Decisions >
+ * Exams. These pages are invisible to the normal crawl (Pages tab hidden
+ * for students, not linked from any Module), but fetching a page
+ * directly BY SLUG still works. Covers 2023 and earlier plus the quiz
+ * archive. Safe to re-run.
  */
 function scrubPracticeMaterials() {
   const baseUrl = getProp_("CANVAS_BASE_URL", "https://bcourses.berkeley.edu").replace(/\/$/, "");
@@ -908,64 +1019,30 @@ function scrubPracticeMaterials() {
   if (!token) throw new Error("CANVAS_TOKEN is not set.");
 
   const courseId = 1555528; // MBA 200S - Data and Decisions
-  // Destination folder created ahead of time: Data & Decisions > Exams
-  const destFolderId = "1OHkZScCA7HqQ3lVgBkCbI0kY9UtwIl9J";
+  const destFolderId = "1OHkZScCA7HqQ3lVgBkCbI0kY9UtwIl9J"; // Data & Decisions > Exams
 
-  const slugs = ["practice-materials", "more-practice-materials"];
-  let ids = new Set();
-  slugs.forEach(function (slug) {
+  const ids = new Set();
+  ["practice-materials", "more-practice-materials"].forEach(function (slug) {
     const page = canvasGet_(baseUrl, token, "/courses/" + courseId + "/pages/" + slug);
     if (page[0]) union_(ids, extractFileIds_(page[0].body));
-    Logger.log("page " + slug + ": " + (page[0] ? "found, " + extractFileIds_(page[0].body).size + " file link(s)" : "not reachable"));
+    Logger.log("page " + slug + ": " + (page[0] ? "found" : "not reachable"));
   });
 
-  const folder = DriveApp.getFolderById(destFolderId);
-  let uploaded = 0, skipped = 0, locked = 0;
-
-  ids.forEach(function (fid) {
-    const meta = getFileMetadata_(baseUrl, token, fid);
-    if (!meta || !meta.url) { locked++; return; }
-
-    const fname = meta.display_name;
-    const isWord = /\.docx?$/i.test(fname);
-    const uploadName = isWord ? fname.replace(/\.docx?$/i, ".pdf") : fname;
-
-    if (folder.getFilesByName(uploadName).hasNext()) {
-      skipped++;
-      return;
-    }
-
-    const resp = UrlFetchApp.fetch(meta.url, { muteHttpExceptions: true });
-    const rawBlob = resp.getBlob();
-    const finalBlob = isWord
-      ? convertDocxToPdf_(rawBlob.getBytes(), fname).setName(uploadName)
-      : rawBlob.setName(uploadName);
-    folder.createFile(finalBlob);
-    uploaded++;
-    Logger.log("  uploaded: " + uploadName);
-  });
-
-  const summary = uploaded + " uploaded, " + skipped + " already there, " + locked + " locked/inaccessible.";
-  Logger.log(summary);
-  return summary;
+  return scrubFilesInto_(baseUrl, token, courseById_(courseId), DriveApp.getFolderById(destFolderId), ["Exams"], Array.from(ids));
 }
 
 /**
- * Trimmed first pass: just the 2025 and 2024 exam sets (both the real
- * Final Exam and its "Practice Final Exam" companion set) from the
- * Practice Materials page -- 22 files total. IDs taken directly from
- * the page body already read, so this skips the page fetch entirely.
- * Same dedupe-by-filename safety as the full version. Already run once;
- * kept here so re-running is harmless (everything will just show as
- * "already there"). Run scrubPracticeMaterials() for 2023 and earlier.
+ * Trimmed first pass: the 2025 and 2024 exam sets (Final Exam + Practice
+ * Final Exam, with solutions) -- 22 files. Already run once; re-running
+ * is harmless. Run scrubPracticeMaterials() for 2023 and earlier.
  */
 function scrubPracticeMaterials2024_2025() {
   const baseUrl = getProp_("CANVAS_BASE_URL", "https://bcourses.berkeley.edu").replace(/\/$/, "");
   const token = getProp_("CANVAS_TOKEN", null);
   if (!token) throw new Error("CANVAS_TOKEN is not set.");
 
+  const courseId = 1555528;
   const destFolderId = "1OHkZScCA7HqQ3lVgBkCbI0kY9UtwIl9J"; // Data & Decisions > Exams
-
   const ids = [
     // Final Exam 2025 + solutions
     95232068, 95232067, 95232069, 95232075, 95232074, 95232077,
@@ -977,34 +1054,5 @@ function scrubPracticeMaterials2024_2025() {
     94797441, 94797445, 94797337, 94797442, 95232323, 95232180,
   ];
 
-  const folder = DriveApp.getFolderById(destFolderId);
-  let uploaded = 0, skipped = 0, locked = 0;
-
-  ids.forEach(function (fid) {
-    const meta = getFileMetadata_(baseUrl, token, String(fid));
-    if (!meta || !meta.url) { locked++; Logger.log("  locked/inaccessible: file " + fid); return; }
-
-    const fname = meta.display_name;
-    const isWord = /\.docx?$/i.test(fname);
-    const uploadName = isWord ? fname.replace(/\.docx?$/i, ".pdf") : fname;
-
-    if (folder.getFilesByName(uploadName).hasNext()) {
-      skipped++;
-      Logger.log("  already there, skipping: " + uploadName);
-      return;
-    }
-
-    const resp = UrlFetchApp.fetch(meta.url, { muteHttpExceptions: true });
-    const rawBlob = resp.getBlob();
-    const finalBlob = isWord
-      ? convertDocxToPdf_(rawBlob.getBytes(), fname).setName(uploadName)
-      : rawBlob.setName(uploadName);
-    folder.createFile(finalBlob);
-    uploaded++;
-    Logger.log("  uploaded: " + uploadName);
-  });
-
-  const summary = uploaded + " uploaded, " + skipped + " already there, " + locked + " locked/inaccessible.";
-  Logger.log(summary);
-  return summary;
+  return scrubFilesInto_(baseUrl, token, courseById_(courseId), DriveApp.getFolderById(destFolderId), ["Exams"], ids);
 }
