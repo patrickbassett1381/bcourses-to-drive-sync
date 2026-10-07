@@ -1,4 +1,11 @@
 /**
+ * v5.1 changes (2026-10-06): (1) the state file's folder is fixed
+ * (STATE_FOLDER_ID), so COURSES can be reordered or trimmed safely;
+ * (2) dated Google Doc prep sheets in _Study are exported to PDF into
+ * reMarkable/<class>/Prep (the cloud nightly prep task saves Docs);
+ * (3) Fall B courses added at the end of COURSES as TODO placeholders,
+ * which the script skips until term-setup fills them in.
+ *
  * bCourses -> Google Drive sync (v5), running entirely inside Google
  * Apps Script under your berkeley.edu account. No Cloud Console, no
  * GitHub, no local install -- this sidesteps the 2-Step Verification
@@ -132,11 +139,44 @@ const COURSES = [
     excludeKeywords: ["syllabus", "roster"],
     remarkableFolder: "Leading People",
   },
+  // ---- Fall B (starts Oct 19). Placeholders: skipped until term-setup
+  // fills in courseId, driveFolderId and mode. Always ADD new terms
+  // below this line; Fall A stays above until its finals are done.
+  {
+    courseId: 0, // TODO: from bCourses
+    name: "MBA 203 - Finance",
+    driveFolderId: "TODO",
+    mode: "", // TODO: "mirror" or "lecture-pages"
+    includeExt: ["pdf", "pptx", "docx", "xlsx"],
+    excludeKeywords: ["syllabus", "roster"],
+    remarkableFolder: "Finance",
+  },
+  {
+    courseId: 0, // TODO
+    name: "MBA 205D - Business Communication",
+    driveFolderId: "TODO",
+    mode: "", // TODO
+    includeExt: ["pdf", "pptx", "docx", "xlsx"],
+    excludeKeywords: ["syllabus", "roster"],
+    remarkableFolder: "Business Communication",
+  },
+  {
+    courseId: 0, // TODO
+    name: "MBA 206 - Marketing",
+    driveFolderId: "TODO",
+    mode: "", // TODO
+    includeExt: ["pdf", "pptx", "docx", "xlsx"],
+    excludeKeywords: ["syllabus", "roster"],
+    remarkableFolder: "Marketing",
+  },
 ];
 
-// Where the small sync-state JSON file lives (first course's folder).
+// Where the small sync-state JSON file lives. v5.1: a fixed folder ID
+// (the Data and Decisions course folder, where it has always been), so
+// adding, removing or reordering COURSES can never "lose" the state.
+const STATE_FOLDER_ID = "1PfgvpL42ilvaqXNATq8_Bw4GR_qYkPem";
 function stateParentFolderId_() {
-  return COURSES[0].driveFolderId;
+  return STATE_FOLDER_ID;
 }
 const STATE_FILENAME = "_bcourses_sync_state.json";
 
@@ -558,27 +598,58 @@ function mirrorPrepToRemarkable() {
     while (files.hasNext()) {
       const f = files.next();
       const name = f.getName();
-      if (!PREP_NAME_RE.test(name) || fileExt_(name) !== "pdf" || f.getSize() > PREP_MAX_BYTES) continue;
+      if (!PREP_NAME_RE.test(name)) continue;
+      // v5.1: the cloud prep task saves Google Docs; they're exported to
+      // PDF for the reMarkable. PDFs saved by hand are copied as before.
+      const isDoc = f.getMimeType() === MimeType.GOOGLE_DOCS;
+      if (!isDoc && (fileExt_(name) !== "pdf" || f.getSize() > PREP_MAX_BYTES)) continue;
+      const pdfName = isDoc ? name.replace(/\.pdf$/i, "") + ".pdf" : name;
       if (!prepFolder) prepFolder = getOrCreateFolderPath_(remarkableClassFolder_(course), [PREP_SUBFOLDER]);
 
       // Each copy records the original's "last updated" time in its
       // description, so a regenerated original is spotted reliably.
       const srcStamp = String(f.getLastUpdated().getTime());
-      const existing = prepFolder.getFilesByName(name);
+      const existing = prepFolder.getFilesByName(pdfName);
       let updated = false;
       if (existing.hasNext()) {
         const copy = existing.next();
         if (copy.getDescription() === PREP_STAMP_PREFIX + srcStamp) continue; // up to date
+        // Skip a Doc that is still being written (changed in the last 5 min).
+        if (isDoc && Date.now() - f.getLastUpdated().getTime() < 5 * 60 * 1000) continue;
         copy.setTrashed(true);
         updated = true;
+      } else if (isDoc && Date.now() - f.getLastUpdated().getTime() < 5 * 60 * 1000) {
+        continue; // picked up next hour, once the task has finished writing it
       }
-      f.makeCopy(name, prepFolder).setDescription(PREP_STAMP_PREFIX + srcStamp);
-      lines.push("[" + course.remarkableFolder + "] Prep" + (updated ? " (updated)" : "") + " <- " + name);
+      const out = isDoc ? prepFolder.createFile(exportPrepDocAsPdf_(f.getId()).setName(pdfName)) : f.makeCopy(pdfName, prepFolder);
+      out.setDescription(PREP_STAMP_PREFIX + srcStamp);
+      lines.push("[" + course.remarkableFolder + "] Prep" + (updated ? " (updated)" : "") + " <- " + pdfName);
     }
   });
   lines.forEach(function (l) { Logger.log(l); });
   if (lines.length) queueEmailLines_(lines);
   return lines.length + " prep sheet(s) copied or updated.";
+}
+
+// v5.1: exports a Google Doc prep sheet as a compact Letter PDF. Works on
+// a temporary copy (narrow margins set there), so the original Doc is
+// never modified -- otherwise its "last updated" time would change and
+// it would be re-exported every hour.
+const PREP_MARGIN_PT = 28; // about 10 mm, same as the class-prep PDF recipe
+
+function exportPrepDocAsPdf_(docId) {
+  const temp = DriveApp.getFileById(docId).makeCopy("_temp export");
+  try {
+    const doc = DocumentApp.openById(temp.getId());
+    const body = doc.getBody();
+    body.setPageWidth(612).setPageHeight(792); // US Letter
+    body.setMarginTop(PREP_MARGIN_PT).setMarginBottom(PREP_MARGIN_PT)
+      .setMarginLeft(PREP_MARGIN_PT).setMarginRight(PREP_MARGIN_PT);
+    doc.saveAndClose();
+    return DriveApp.getFileById(temp.getId()).getAs(MimeType.PDF);
+  } finally {
+    temp.setTrashed(true);
+  }
 }
 
 /**

@@ -48,15 +48,16 @@ The trade-off is that Apps Script has no built-in git. This repo provides versio
 | `Lecture Notes` | Lecture slides and notes |
 | `Readings & Cases` | Pre-reads, readings, case studies and class materials |
 | `Exams` | Exams, practice finals, midterms and quizzes |
-| `Prep` | My dated prep sheets (`YYYY-MM-DD – …pdf`) from each course's `_Study` folder |
+| `Prep` | My dated prep sheets (`YYYY-MM-DD – …`) from each course's `_Study` folder: PDFs are copied, Google Docs are exported to PDF |
 
 The rules that keep it clean:
 - Only files the script downloaded from bCourses go in. My own files (anything in a `_` folder such as `_My Work`, or anything I add by hand) never do. Prep sheets are the one deliberate exception.
 - Everything is a PDF. PowerPoint and Word files are converted for the tablet copy (the originals stay as they are in the course folders), and Excel/CSV files are left out.
 - The subfolder comes from ordered whole-word rules (`REMARKABLE_CATEGORIES`), so "Practice Final" lands in Exams and "example" never counts as "exam".
 - A regenerated prep sheet replaces its old copy. Each copy records the original's last-updated time, so changes are caught reliably.
+- Prep sheets written by the cloud nightly task arrive as Google Docs. The script exports them to Letter-size PDFs from a temporary copy, so the original Doc is never touched (touching it would change its timestamp and trigger a re-export every hour).
 
-**Is safe to re-run.** A small JSON state file in Drive records every synced Canvas file ID. It's saved after *each* upload, so a crash halfway through a run never causes duplicates. A script lock stops two runs from overlapping.
+**Is safe to re-run.** A small JSON state file in Drive (in a fixed folder, so courses can be added or removed freely) records every synced Canvas file ID. It's saved after *each* upload, so a crash halfway through a run never causes duplicates. A script lock stops two runs from overlapping.
 
 **Lets you check before you run.** `dryRun()` logs every file it *would* sync, its Drive destination, and its reMarkable subfolder (or "not for reMarkable"), without changing anything.
 
@@ -87,7 +88,7 @@ Each course is one entry in `COURSES`: `courseId`, `driveFolderId`, `mode`, file
 - Moving files from Drive onto the tablet is still a manual import, because reMarkable's Google Drive integration doesn't auto-sync.
 - Hourly means "within the hour". Slides posted 15 minutes before class can still miss; the class-prep workflow reads bCourses directly as a backup.
 - Folders whose names match no category (e.g. "Discussions", "reference materials") sync into Drive but aren't copied to reMarkable. Add a keyword to `REMARKABLE_CATEGORIES` to include one.
-- New terms need new `COURSES` entries.
+- New terms need new `COURSES` entries. A term-setup workflow drafts them each module; entries marked `TODO` are skipped until filled in.
 
 ## Part of a larger study system
 
@@ -109,5 +110,6 @@ Each functional change is its own commit:
 | v3 | Mirror filtered to study categories |
 | v4 | Exams added as a category |
 | v5 | reMarkable moved under MBA with five subfolders (plus Homework/Practice Problems); bCourses-only rule; course folders keep original Word files while the tablet copy is PDF-only, no Excel; Prep copied from `_Study`; hourly schedule; daily 9 PM summary email |
+| v5.1 | State file pinned to a fixed folder, so `COURSES` can be reordered or trimmed safely; Google Doc prep sheets exported to PDF for the tablet (supports cloud-only nightly prep); next module's courses added as `TODO` placeholders |
 
 See `git log` for the full history.
