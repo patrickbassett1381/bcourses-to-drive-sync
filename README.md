@@ -1,20 +1,20 @@
 # bcourses-to-drive-sync
 
 > **Problem:** Course files for my Haas MBA classes are scattered across bCourses (Canvas): Files tabs, lecture pages, assignments, modules and announcements. Every course organizes them differently, and downloading and filing them by hand every week was slow and easy to miss.
-> **Solution:** A Google Apps Script that checks bCourses every hour, figures out what each new file is, and files it into the right Google Drive folder. It also keeps a PDF-only copy of the files I study from, sorted into Homework, Lecture Notes, Readings & Cases, Exams and Prep, for my reMarkable tablet.
+> **Solution:** A Google Apps Script that checks bCourses every hour, figures out what each new file is, and files it into the right Google Drive folder. It also keeps a PDF-only copy of the files I study from, sorted into Homework, Lecture Slides, In Lecture Notes, Readings & Cases, Exams and Prep, for my reMarkable tablet.
 > **Result:** Four courses sync themselves in the cloud with no laptop involved. Slides posted in the middle of the day reach Drive and the tablet folder within about an hour, and one summary email arrives each evening.
 
 ```mermaid
 flowchart LR
     A[bCourses / Canvas API<br/>Files · Pages · Assignments ·<br/>Modules · Announcements · Syllabus] -->|hourlyRun, every hour| B{Classify per course}
     B -->|mirror mode| C[Recreate instructor's<br/>Canvas folders]
-    B -->|lecture-pages mode| D[Homework / Readings /<br/>Lecture Notes by page headings]
+    B -->|lecture-pages mode| D[Homework / Lecture Slides /<br/>In Lecture Notes by page section]
     B -->|no match| E[Unsorted - Review]
     C --> F[(Google Drive<br/>per-course folders<br/>system of record)]
     D --> F
     E --> F
     P[Prep sheets saved to<br/>course _Study folder] --> G
-    F -->|bCourses files only,<br/>PDF only, no Excel| G[(MBA/reMarkable/&lt;class&gt;/<br/>Homework · Lecture Notes ·<br/>Readings & Cases · Exams · Prep)]
+    F -->|bCourses files only,<br/>PDF only, no Excel| G[(MBA/reMarkable/&lt;class&gt;/<br/>Homework · Lecture Slides ·<br/>In Lecture Notes · Readings & Cases ·<br/>Exams · Prep)]
     G -.->|manual import| H[reMarkable tablet]
     F --> M[Daily 9 PM<br/>summary email]
 ```
@@ -34,18 +34,19 @@ The trade-off is that Apps Script has no built-in git. This repo provides versio
 | Mode | Used when | How files are sorted |
 |---|---|---|
 | `mirror` | The instructor already uses Files-tab folders (e.g. Financial Accounting, Leading People) | Recreates the instructor's own Canvas folder structure in Drive |
-| `lecture-pages` | No Files-tab folders; material lives on lecture pages (e.g. Data & Decisions, Economics) | Assignment files go to `Homework`. Lecture-page files are split by the page's own section headings ("Pre-Class Reading" goes to `Readings`, "In-Class … Slides" goes to `Lecture Notes`). Anything else falls back to keywords in the filename |
+| `lecture-pages` | No Files-tab folders; material lives on lecture pages (e.g. Data & Decisions, Economics) | Assignment files go to `Homework`. Lecture pages are found through the Pages list and Modules (the Pages list is blocked when an instructor hides the Pages tab). Slide decks (matched by a per-course filename pattern) go to `Lecture Slides`; other files in the page's "Class Session" section go to `In Lecture Notes`. Anything else falls back to keywords in the filename |
 
 **Never misfiles silently.** Anything that can't be classified lands in an `Unsorted - Review` folder for that course.
 
 **Keeps originals in the course folders.** A Word homework file stays a Word file, so I can type my answers in it and submit it back to bCourses. Only the tablet copy is converted to PDF.
 
-**Keeps a reMarkable folder the script owns.** Under `MBA/reMarkable/<class>/` there are five subfolders:
+**Keeps a reMarkable folder the script owns.** Under `MBA/reMarkable/<class>/` there are six subfolders:
 
 | Subfolder | What goes in it |
 |---|---|
 | `Homework` | Homework and problem sets the **professor posted** on bCourses, with practice problems in `Homework/Practice Problems` |
-| `Lecture Notes` | Lecture slides and notes |
+| `Lecture Slides` | Lecture slide decks (same folder name in every course) |
+| `In Lecture Notes` | In-class worksheets and handouts |
 | `Readings & Cases` | Pre-reads, readings, case studies and class materials |
 | `Exams` | Exams, practice finals, midterms and quizzes |
 | `Prep` | My dated prep sheets (`YYYY-MM-DD – …`) from each course's `_Study` folder: PDFs are copied, Google Docs are exported to PDF |
@@ -67,10 +68,12 @@ The rules that keep it clean:
 
 | Function | Purpose | How it runs |
 |---|---|---|
-| `hourlyRun()` | Sync bCourses → copy prep sheets → send the daily email at 9 PM. Each step runs even if an earlier one fails | One hourly trigger |
+| `hourlyRun()` | Sync bCourses → copy prep sheets → copy Exams folders → send the daily email at 9 PM. Each step runs even if an earlier one fails | One hourly trigger |
 | `runSync()` | The bCourses → Drive (+ reMarkable) sync on its own | Called by `hourlyRun`, or by hand |
 | `dryRun()` | Preview what would sync and where | By hand, after any config or logic change |
 | `mirrorPrepToRemarkable()` | Copy new or updated prep sheets from `_Study` to `reMarkable/<class>/Prep` | Called by `hourlyRun`, or by hand |
+| `mirrorExtraSourcesToRemarkable()` | Copy hand- or scrub-filled folders (e.g. past Exams) to the tablet folder, skipping excluded files | Called by `hourlyRun`, or by hand |
+| `previewMigration()` / `migrateToLectureSlides()` | Move already-synced files into the v5.2 `Lecture Slides` / `In Lecture Notes` layout (preview only logs) | By hand, one-off |
 | `rebuildRemarkable()` | Build the reMarkable tree from files already synced, using bCourses as the source of truth, and restore Word originals that older versions stored only as PDFs. Stops before Apps Script's 6-minute limit; re-run until it says DONE | By hand, after upgrading or changing categories |
 | `installTriggers()` | Delete old sync triggers and create the single hourly one | By hand, once |
 | `scrubPracticeMaterials()` / `scrubPracticeMaterials2024_2025()` | Backfill practice exams from pages hidden from students and not linked from any module, which the normal crawl can't see | By hand, one-off |
@@ -81,7 +84,7 @@ The rules that keep it clean:
 
 ## Configuration
 
-Each course is one entry in `COURSES`: `courseId`, `driveFolderId`, `mode`, file-type filters and `remarkableFolder`, plus optional `extraSourceFolders` for scrub-filled folders. The bCourses token is stored as a Script Property (`CANVAS_TOKEN`) and never in code. The reMarkable root, category rules, email hour and time zone are constants at the top of the file.
+Each course is one entry in `COURSES`: `courseId`, `driveFolderId`, `mode`, file-type filters and `remarkableFolder`, plus optional `extraSourceFolders` (hand- or scrub-filled folders, with an `exclude` pattern), `slidesPattern` (how to spot slide decks on lecture pages) and `folderRenames` (e.g. an instructor's "Lecture notes" folder → `Lecture Slides`). The bCourses token is stored as a Script Property (`CANVAS_TOKEN`) and never in code. The reMarkable root, category rules, email hour and time zone are constants at the top of the file.
 
 ## Known limitations
 
@@ -111,5 +114,6 @@ Each functional change is its own commit:
 | v4 | Exams added as a category |
 | v5 | reMarkable moved under MBA with five subfolders (plus Homework/Practice Problems); bCourses-only rule; course folders keep original Word files while the tablet copy is PDF-only, no Excel; Prep copied from `_Study`; hourly schedule; daily 9 PM summary email |
 | v5.1 | State file pinned to a fixed folder, so `COURSES` can be reordered or trimmed safely; Google Doc prep sheets exported to PDF for the tablet (supports cloud-only nightly prep); next module's courses added as `TODO` placeholders |
+| v5.2 | Lecture pages found through Modules when the Pages tab is hidden (Economics and Data & Decisions had been syncing no slides); slide decks go to `Lecture Slides` in every course and on the tablet, other in-class files to `In Lecture Notes`; pre-class readings no longer synced from lecture pages; Exams folders copied to the tablet hourly; one-off migration for already-synced files |
 
 See `git log` for the full history.

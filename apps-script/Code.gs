@@ -1,4 +1,22 @@
 /**
+ * v5.2 changes (2026-10-08): lecture pages are now found through
+ * Modules as well as the Pages list. When an instructor hides the Pages
+ * tab (Econ 201A, Data & Decisions), the Pages list returns 403 and v5.1
+ * silently found zero lecture pages, so no slides or readings ever
+ * synced for those courses. Pages are still readable by slug, and every
+ * lecture page is linked from a module. Also: module items are fetched
+ * from items_url when Canvas leaves them out of a big module, and a
+ * WARNING is logged when a lecture-pages course finds no pages.
+ * Lecture-page files are filed by page section: slide decks (file name
+ * matches the course's slidesPattern) -> "Lecture Slides"; other files
+ * under "Class Session" -> "In Lecture Notes". Pre-Class Materials,
+ * Objectives and Additional Resources aren't synced (see
+ * LECTURE_PAGE_FOLDERS). Slide folders are "Lecture Slides" in every
+ * course (folderRenames for Accounting / Leading People) and in
+ * reMarkable. extraSourceFolders (Econ and D&D Exams) are copied to
+ * reMarkable every hour, honouring each entry's `exclude`. One-off
+ * migrateToLectureSlides() moves already-synced files to this layout.
+ *
  * v5.1 changes (2026-10-06): (1) the state file's folder is fixed
  * (STATE_FOLDER_ID), so COURSES can be reordered or trimmed safely;
  * (2) dated Google Doc prep sheets in _Study are exported to PDF into
@@ -98,6 +116,10 @@ const SEND_EMAIL_SUMMARY = true;
 const DAILY_EMAIL_HOUR = 21; // 9 PM Pacific
 const TIME_ZONE = "America/Los_Angeles";
 
+// v5.2: every course's slide decks end up in a folder with this name,
+// in Drive and in reMarkable.
+const SLIDES_FOLDER_NAME = "Lecture Slides";
+
 const COURSES = [
   {
     courseId: 1555528,
@@ -107,6 +129,9 @@ const COURSES = [
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
     remarkableFolder: "Data and Decisions",
+    // v5.2: slide decks ("Lecture3_Data&Decisions_2026_FT.pdf") go to
+    // Lecture Slides; see LECTURE_PAGE_FOLDERS for the rest.
+    slidesPattern: /^lecture\d+_/i,
     // Folders filled from bCourses by the one-off scrub functions below
     // (not by runSync). Everything in them came from bCourses, so
     // rebuildRemarkable() includes them.
@@ -120,6 +145,11 @@ const COURSES = [
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
     remarkableFolder: "Economics",
+    // Past exams Pat downloaded from bCourses by hand. Copied to
+    // reMarkable/Economics/Exams every hour; his own files in the folder
+    // (cheat sheet, Gradescope printout, captions) are left out.
+    extraSourceFolders: [{ folderId: "1YtfrF2M3FmI-Cn-mZ9d7mliQaHewP-e1", path: ["Exams"], exclude: /cheat ?sheet|gradescope|captions/i }],
+    slidesPattern: /^lecture\d+_/i, // slide decks ("Lecture13_MarketsFail.pdf")
   },
   {
     courseId: 1555594,
@@ -129,6 +159,8 @@ const COURSES = [
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
     remarkableFolder: "Financial Accounting",
+    // v5.2: Canvas folder name -> Drive folder name (first level only).
+    folderRenames: { "lecture notes": SLIDES_FOLDER_NAME },
   },
   {
     courseId: 1555298,
@@ -138,6 +170,7 @@ const COURSES = [
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
     remarkableFolder: "Leading People",
+    folderRenames: { "class slides": SLIDES_FOLDER_NAME },
   },
   // ---- Fall B (starts Oct 19). Placeholders: skipped until term-setup
   // fills in courseId, driveFolderId and mode. Always ADD new terms
@@ -207,7 +240,9 @@ const REMARKABLE_CATEGORIES = [
   { folder: ["Homework", "Practice Problems"], re: /\bpractice problems?\b/, alsoFilename: true },
   { folder: ["Homework"], re: /\b(homework|hw\d*|problem sets?|psets?|assignments?)\b/ },
   { folder: ["Readings & Cases"], re: /\b(readings?|pre-?\s?reads?|pre-?\s?class|cases?|case stud(y|ies)|class materials?)\b/ },
-  { folder: ["Lecture Notes"], re: /\b(lectures?|slides?|notes)\b/ },
+  // v5.2: in-class worksheets/handouts kept apart from the slide decks.
+  { folder: ["In Lecture Notes"], re: /\bin lecture (notes|files)\b/ },
+  { folder: [SLIDES_FOLDER_NAME], re: /\b(lectures?|slides?|notes)\b/ }, // v5.2: was "Lecture Notes"
 ];
 const PREP_SUBFOLDER = "Prep";
 
@@ -232,7 +267,7 @@ function hourlyRun() {
   // re-thrown at the end so Apps Script's failure email still reaches you.
   const errors = [];
   try {
-    [runSync, mirrorPrepToRemarkable, maybeSendDailySummary_].forEach(function (step) {
+    [runSync, mirrorPrepToRemarkable, mirrorExtraSourcesToRemarkable, maybeSendDailySummary_].forEach(function (step) {
       try {
         step();
       } catch (e) {
@@ -317,8 +352,8 @@ function sync_(dry) {
         return;
       }
 
-      const entry = destinations[fid];
-      const destPath = entry.kind === "ambiguous" ? classifyStrayPath_(fname) : entry.path;
+      const destPath = destPathFor_(destinations[fid], fname, course);
+      if (!destPath) return; // v5.2: a page section we don't sync
       // Files keep their original format in the course folders (Word
       // homework stays editable). Only the reMarkable copy is a PDF.
       const uploadName = fname;
@@ -381,7 +416,7 @@ function sync_(dry) {
 // Returns { fileId: {kind: "mirror"|"fixed", path: [...]} | {kind: "ambiguous"} }
 
 function discoverDestinations_(baseUrl, token, course) {
-  if (course.mode === "mirror") return discoverForMirrorCourse_(baseUrl, token, course.courseId);
+  if (course.mode === "mirror") return discoverForMirrorCourse_(baseUrl, token, course.courseId, course.folderRenames);
   if (course.mode === "lecture-pages") return discoverForLecturePagesCourse_(baseUrl, token, course.courseId);
   throw new Error("Unknown mode '" + course.mode + "' for " + course.name);
 }
@@ -399,14 +434,22 @@ function getFolderPathMap_(baseUrl, token, courseId) {
   return map;
 }
 
-function discoverForMirrorCourse_(baseUrl, token, courseId) {
+// v5.2: folderRenames maps a Canvas top-level folder name (lowercase)
+// to the Drive name, e.g. Accounting's "Lecture notes" -> "Lecture Slides".
+function renameTopFolder_(path, folderRenames) {
+  if (!path.length || !folderRenames) return path;
+  const to = folderRenames[path[0].toLowerCase()];
+  return to ? [to].concat(path.slice(1)) : path;
+}
+
+function discoverForMirrorCourse_(baseUrl, token, courseId, folderRenames) {
   const folderMap = getFolderPathMap_(baseUrl, token, courseId);
   const results = {};
 
   // Primary source: Canvas's own Files folder structure, mirrored as-is.
   canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/files", { per_page: 100 }).forEach(function (f) {
     const fid = String(f.id);
-    const path = folderMap[String(f.folder_id)] || [];
+    const path = renameTopFolder_(folderMap[String(f.folder_id)] || [], folderRenames);
     results[fid] = path.length ? { kind: "mirror", path: path } : { kind: "ambiguous" };
   });
 
@@ -419,6 +462,9 @@ function discoverForMirrorCourse_(baseUrl, token, courseId) {
   return results;
 }
 
+// v5.2: page-linked files are tagged with their page section
+// ({kind: "page", section: "pre-class" | "in-class" | null}); the folder
+// is picked in destPathFor_ once the file name is known.
 function discoverForLecturePagesCourse_(baseUrl, token, courseId) {
   const results = {};
   function claim(fid, entry) {
@@ -433,13 +479,22 @@ function discoverForLecturePagesCourse_(baseUrl, token, courseId) {
   });
 
   // Lecture Pages: split by the page's own section headings.
-  canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages", { per_page: 100 }).forEach(function (p) {
-    const detail = canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages/" + p.url);
+  // v5.2: slugs come from the Pages list AND Modules (the list is 403
+  // when the Pages tab is hidden).
+  const slugs = pageSlugs_(baseUrl, token, courseId);
+  if (!slugs.length) Logger.log("  WARNING: no lecture pages found -- slides and readings can't sync for this course.");
+  slugs.forEach(function (slug) {
+    const detail = canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages/" + slug);
     if (!detail[0]) return;
+    // A sub-heading we don't recognise ("Watch", "In-Class Materials")
+    // stays in the section above it; "Objectives" / "Additional
+    // Resources (Optional)" end it.
+    let current = null;
     splitPageIntoSections_(detail[0].body).forEach(function (section) {
-      const label = classifyPageSection_(section.headingText);
+      const s = classifyPageSection_(section.headingText);
+      if (s !== undefined) current = s;
       extractFileIds_(section.html).forEach(function (fid) {
-        claim(fid, label ? { kind: "fixed", path: [label] } : { kind: "ambiguous" });
+        claim(fid, { kind: "page", section: current });
       });
     });
   });
@@ -462,7 +517,7 @@ function classifyStrayPath_(filename) {
   const lectureKw = ["lecture", "slide", "notes"];
   if (homeworkKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return ["Homework"];
   if (readingKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return ["Readings"];
-  if (lectureKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return ["Lecture Notes"];
+  if (lectureKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return [SLIDES_FOLDER_NAME]; // v5.2: was "Lecture Notes"
   return [UNSORTED_FOLDER_NAME];
 }
 
@@ -491,15 +546,34 @@ function stripTags_(html) {
   return (html || "").replace(/<[^>]+>/g, "").trim();
 }
 
+// v5.2: "pre-class" | "in-class" | null (a section we don't sync) |
+// undefined (unrecognised sub-heading: keep the section above it).
 function classifyPageSection_(headingText) {
   const lower = (headingText || "").toLowerCase();
-  if (lower.indexOf("pre-class") !== -1 || lower.indexOf("pre class") !== -1 || lower.indexOf("reading") !== -1) {
-    return "Readings";
-  }
-  if (lower.indexOf("in-class") !== -1 || lower.indexOf("in class") !== -1 || lower.indexOf("lecture") !== -1 || lower.indexOf("slide") !== -1) {
-    return "Lecture Notes";
-  }
-  return null; // unrecognized heading -- let filename-based classification decide
+  if (!lower) return undefined;
+  if (/additional|optional|objective/.test(lower)) return null;
+  if (/pre-?\s?class|reading/.test(lower)) return "pre-class";
+  if (/class session|in-?\s?class|lecture|slide/.test(lower)) return "in-class";
+  return undefined;
+}
+
+// v5.2: where a lecture-pages file goes. Folder names live here only.
+// A section missing from this map isn't synced.
+const LECTURE_PAGE_FOLDERS = {
+  slides: SLIDES_FOLDER_NAME,       // slide decks (course.slidesPattern)
+  "in-class": "In Lecture Notes",   // everything else under Class Session
+  // "pre-class": "Readings",       // Pre-Class Materials -- off for now; uncomment to sync readings
+};
+
+// The Drive path for a discovered file, or null = don't sync it (yet).
+// Files that return null are NOT marked synced, so a rule change later
+// still picks them up.
+function destPathFor_(entry, fname, course) {
+  if (entry.kind === "ambiguous") return classifyStrayPath_(fname);
+  if (entry.kind !== "page") return entry.path;
+  if (course.slidesPattern && course.slidesPattern.test(fname)) return [LECTURE_PAGE_FOLDERS.slides];
+  if (entry.section && LECTURE_PAGE_FOLDERS[entry.section]) return [LECTURE_PAGE_FOLDERS[entry.section]];
+  return null; // Objectives / Additional Resources etc.
 }
 
 function getOrCreateFolderPath_(rootFolder, pathSegments) {
@@ -631,6 +705,29 @@ function mirrorPrepToRemarkable() {
   return lines.length + " prep sheet(s) copied or updated.";
 }
 
+// v5.2: copies each course's extraSourceFolders (e.g. Econ Exams, which
+// Pat fills by hand from bCourses) into reMarkable/<class>/<path>. Runs
+// every hour; files already there (same name) are skipped, and names
+// matching the entry's `exclude` are left out.
+function mirrorExtraSourcesToRemarkable() {
+  const lines = [];
+  COURSES.forEach(function (course) {
+    if (!course.remarkableFolder) return;
+    (course.extraSourceFolders || []).forEach(function (src) {
+      const files = DriveApp.getFolderById(src.folderId).getFiles();
+      while (files.hasNext()) {
+        const f = files.next();
+        if (src.exclude && src.exclude.test(f.getName())) continue;
+        const done = copyToRemarkable_(course, f, src.path);
+        if (done) lines.push("[" + course.remarkableFolder + "] " + done);
+      }
+    });
+  });
+  lines.forEach(function (l) { Logger.log(l); });
+  if (lines.length) queueEmailLines_(lines);
+  return lines.length + " exam file(s) copied to reMarkable.";
+}
+
 // v5.1: exports a Google Doc prep sheet as a compact Letter PDF. Works on
 // a temporary copy (narrow margins set there), so the original Doc is
 // never modified -- otherwise its "last updated" time would change and
@@ -710,8 +807,8 @@ function rebuildRemarkable_() {
           fileInfo[fid] = { skip: true };
           continue;
         }
-        const entry = destinations[fid];
-        const destPath = entry.kind === "ambiguous" ? classifyStrayPath_(fname) : entry.path;
+        const destPath = destPathFor_(destinations[fid], fname, course);
+        if (!destPath) continue;
         info = { n: fname, p: destPath };
         fileInfo[fid] = info;
       }
@@ -751,7 +848,9 @@ function rebuildRemarkable_() {
       const files = DriveApp.getFolderById(src.folderId).getFiles();
       while (files.hasNext()) {
         if (Date.now() - start > TIME_BUDGET_MS) { outOfTime = true; return; }
-        const done = copyToRemarkable_(course, files.next(), src.path);
+        const f = files.next();
+        if (src.exclude && src.exclude.test(f.getName())) continue;
+        const done = copyToRemarkable_(course, f, src.path);
         if (done) { copied++; Logger.log("  -> " + done); }
       }
     });
@@ -761,6 +860,120 @@ function rebuildRemarkable_() {
 
   const summary = copied + " file(s) copied, " + restored + " Word original(s) restored, " + notFound + " not found in Drive. " +
     (outOfTime ? "NOT FINISHED -- run rebuildRemarkable again." : "DONE.");
+  Logger.log(summary);
+  return summary;
+}
+
+/**
+ * ONE-OFF (v5.2): moves what's already synced into the v5.2 layout.
+ *  1. reMarkable/<class>/Lecture Notes -> Lecture Slides (every course).
+ *  2. Accounting "Lecture notes" and Leading People "class slides" in
+ *     Drive -> renamed "Lecture Slides" (same folder, same files).
+ *  3. Econ / D&D "Lecture Notes" (made by this morning's runs): slide
+ *     decks -> Lecture Slides, everything else -> In Lecture Notes; their
+ *     reMarkable copies move to match.
+ * Same files and IDs throughout -- nothing is re-downloaded. Also copies
+ * the extraSourceFolders (Econ Exams) to reMarkable.
+ * Run previewMigration first: it only writes to the log.
+ */
+function previewMigration() { return migrate_(true); }
+function migrateToLectureSlides() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) throw new Error("The hourly sync is running right now -- try again in a few minutes.");
+  try { return migrate_(false); } finally { lock.releaseLock(); }
+}
+
+// Renames parent/<fromName> to <toName>, or merges it into an existing
+// <toName> folder (moving its contents, then trashing the empty one).
+function mergeFolderInto_(parent, fromName, toName, dry, label) {
+  const from = findFolderPath_(parent, [fromName]);
+  if (!from) return 0;
+  const to = findFolderPath_(parent, [toName]);
+  Logger.log((dry ? "  WOULD " : "  ") + (to ? "merge " : "rename ") + label + fromName + " -> " + toName);
+  if (dry) return 1;
+  if (!to) { from.setName(toName); return 1; }
+  const files = from.getFiles();
+  while (files.hasNext()) files.next().moveTo(to);
+  const subs = from.getFolders();
+  while (subs.hasNext()) subs.next().moveTo(to);
+  from.setTrashed(true);
+  return 1;
+}
+
+function migrate_(dry) {
+  const OLD = "Lecture Notes";
+  const state = loadState_();
+  const fileInfo = state._files || {};
+  const rmRoot = findFolderPath_(DriveApp.getFolderById(REMARKABLE_ROOT_FOLDER_ID), [REMARKABLE_FOLDER_NAME]);
+  let changes = 0;
+
+  COURSES.forEach(function (course) {
+    if (course.driveFolderId.indexOf("TODO") === 0) return;
+    const cid = String(course.courseId);
+    const courseRoot = DriveApp.getFolderById(course.driveFolderId);
+    Logger.log("=== " + course.name + " ===");
+
+    // 1. reMarkable folder rename.
+    const rmClass = rmRoot && course.remarkableFolder ? findFolderPath_(rmRoot, [course.remarkableFolder]) : null;
+    if (rmClass) changes += mergeFolderInto_(rmClass, OLD, SLIDES_FOLDER_NAME, dry, "reMarkable/" + course.remarkableFolder + "/");
+
+    // 2. Mirror courses: rename the Drive folder and the paths in the state file.
+    Object.keys(course.folderRenames || {}).forEach(function (fromLower) {
+      const toName = course.folderRenames[fromLower];
+      const it = courseRoot.getFolders();
+      const names = [];
+      while (it.hasNext()) names.push(it.next().getName());
+      names.forEach(function (n) {
+        if (n.toLowerCase() === fromLower && n !== toName) changes += mergeFolderInto_(courseRoot, n, toName, dry, "");
+      });
+      (state[cid] || []).forEach(function (fid) {
+        const info = fileInfo[fid];
+        if (info && info.p && info.p.length && info.p[0].toLowerCase() === fromLower) info.p = [toName].concat(info.p.slice(1));
+      });
+    });
+
+    // 3. Lecture-pages courses: split this morning's "Lecture Notes".
+    if (course.mode === "lecture-pages" && course.slidesPattern) {
+      (state[cid] || []).forEach(function (fid) {
+        const info = fileInfo[fid];
+        if (!info || info.skip || !info.p || info.p.join("/") !== OLD) return;
+        const isSlides = course.slidesPattern.test(info.n);
+        const newPath = [isSlides ? LECTURE_PAGE_FOLDERS.slides : LECTURE_PAGE_FOLDERS["in-class"]];
+        Logger.log((dry ? "  WOULD MOVE: " : "  moved: ") + OLD + "/" + info.n + " -> " + newPath[0] + "/");
+        changes++;
+        if (dry) return;
+        const file = info.d ? safeGetFile_(info.d) : null;
+        if (file) {
+          file.moveTo(getOrCreateFolderPath_(courseRoot, newPath));
+          if (!isSlides && rmClass) {
+            // Its reMarkable copy sat with the slides; move it to In Lecture Notes.
+            const plan = remarkablePlan_([OLD], info.n);
+            [OLD, SLIDES_FOLDER_NAME].forEach(function (name) {
+              const f = plan ? findFolderPath_(rmClass, [name]) : null;
+              if (!f) return;
+              const it = f.getFilesByName(plan.name);
+              while (it.hasNext()) it.next().setTrashed(true);
+            });
+            copyToRemarkable_(course, file, newPath);
+          }
+        }
+        info.p = newPath;
+      });
+      if (!dry) {
+        const old = findFolderPath_(courseRoot, [OLD]);
+        if (old && !old.getFiles().hasNext() && !old.getFolders().hasNext()) {
+          old.setTrashed(true);
+          Logger.log("  trashed the empty " + OLD + " folder");
+        }
+      }
+    }
+  });
+
+  if (!dry) {
+    saveState_(state);
+    mirrorExtraSourcesToRemarkable();
+  }
+  const summary = changes + (dry ? " change(s) would be made." : " change(s) made.");
   Logger.log(summary);
   return summary;
 }
@@ -882,21 +1095,14 @@ function union_(a, b) {
 function discoverSecondaryFileIds_(baseUrl, token, courseId) {
   const ids = new Set();
 
-  canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/modules", {
-    per_page: 100,
-    "include[]": "items",
-  }).forEach(function (mod) {
-    (mod.items || []).forEach(function (item) {
-      if (item.type === "File" && item.content_id) ids.add(String(item.content_id));
-    });
+  moduleItems_(baseUrl, token, courseId).forEach(function (item) {
+    if (item.type === "File" && item.content_id) ids.add(String(item.content_id));
   });
 
-  canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages", { per_page: 100 }).forEach(
-    function (p) {
-      const detail = canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages/" + p.url);
-      if (detail[0]) union_(ids, extractFileIds_(detail[0].body));
-    }
-  );
+  pageSlugs_(baseUrl, token, courseId).forEach(function (slug) {
+    const detail = canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages/" + slug);
+    if (detail[0]) union_(ids, extractFileIds_(detail[0].body));
+  });
 
   canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/assignments", {
     per_page: 100,
@@ -914,13 +1120,8 @@ function discoverSecondaryFileIds_(baseUrl, token, courseId) {
 function discoverModulesAnnouncementsSyllabusIds_(baseUrl, token, courseId) {
   const ids = new Set();
 
-  canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/modules", {
-    per_page: 100,
-    "include[]": "items",
-  }).forEach(function (mod) {
-    (mod.items || []).forEach(function (item) {
-      if (item.type === "File" && item.content_id) ids.add(String(item.content_id));
-    });
+  moduleItems_(baseUrl, token, courseId).forEach(function (item) {
+    if (item.type === "File" && item.content_id) ids.add(String(item.content_id));
   });
 
   canvasGet_(baseUrl, token, "/api/v1/announcements", {
@@ -936,6 +1137,36 @@ function discoverModulesAnnouncementsSyllabusIds_(baseUrl, token, courseId) {
   if (course[0]) union_(ids, extractFileIds_(course[0].syllabus_body));
 
   return ids;
+}
+
+// v5.2: every item in every module. Canvas leaves `items` out of a
+// module that has too many; those are fetched from items_url instead.
+function moduleItems_(baseUrl, token, courseId) {
+  const items = [];
+  canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/modules", {
+    per_page: 100,
+    "include[]": "items",
+  }).forEach(function (mod) {
+    if (mod.items) {
+      Array.prototype.push.apply(items, mod.items);
+    } else if (mod.items_url) {
+      Array.prototype.push.apply(items, canvasGet_(baseUrl, token, mod.items_url, { per_page: 100 }));
+    }
+  });
+  return items;
+}
+
+// v5.2: page slugs from the Pages list (403 when the tab is hidden) plus
+// every Page linked from a module. A hidden page can still be read by slug.
+function pageSlugs_(baseUrl, token, courseId) {
+  const slugs = new Set();
+  canvasGet_(baseUrl, token, "/api/v1/courses/" + courseId + "/pages", { per_page: 100 }).forEach(function (p) {
+    if (p.url) slugs.add(p.url);
+  });
+  moduleItems_(baseUrl, token, courseId).forEach(function (item) {
+    if (item.type === "Page" && item.page_url) slugs.add(item.page_url);
+  });
+  return Array.from(slugs);
 }
 
 function getFileMetadata_(baseUrl, token, fileId) {
