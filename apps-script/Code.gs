@@ -1,4 +1,25 @@
 /**
+ * v5.4 changes (2026-10-13): new file DigestQueue.gs. Once a night (9 PM
+ * hour) hourlyRun also writes _Planning/_digest_queue.json: for each
+ * current course (read from the Course Index), the notes in _Notes and
+ * Discussions that aren't in that course's Concept Log ledger yet. The
+ * Sunday review and Thursday digest read this small file instead of
+ * opening every Concept Log, which saves tokens. Ledger = source of
+ * truth; the JSON is a generated view, safe to delete. Upgrade: add
+ * DigestQueue.gs as a second script file, paste this Code.gs, Save, run
+ * previewDigestQueue once and check the log.
+ *
+ * v5.3 changes (2026-10-11): the reMarkable tree is slimmed down to what
+ * the course folders can't give the tablet. Files that are already PDFs
+ * (slides, readings, most exams) are no longer copied, so you import them
+ * straight from the course folders. The tree keeps only (a) Prep sheets
+ * and (b) PDF versions of Word / PowerPoint files from bCourses (the
+ * reMarkable can't open .docx or .pptx). Set REMARKABLE_COPY_NATIVE_PDFS
+ * back to true to restore the full mirror. One-off previewPruneRemarkable()
+ * / pruneRemarkable() moves the now-redundant PDF copies to Drive's Trash.
+ * Why: a full second copy of every bCourses PDF broke "one source of
+ * truth" and wasn't faster to browse than the course folders.
+ *
  * v5.2 changes (2026-10-08): lecture pages are now found through
  * Modules as well as the Pages list. When an instructor hides the Pages
  * tab (Econ 201A, Data & Decisions), the Pages list returns 403 and v5.1
@@ -54,11 +75,13 @@
  * Files are stored in their original format: a Word homework file
  * stays a Word file you can type into.
  *
- * ---- reMarkable folder (v5) ----
+ * ---- reMarkable folder (v5; slimmed in v5.3) ----
  *
- * A second copy of selected files is kept under
- *   MBA/reMarkable/<class>/<Homework | Lecture Notes | Readings & Cases | Exams | Prep>
- * so importing onto the tablet means opening one tidy folder per class.
+ * Since v5.3 only Prep sheets and PDF conversions of Word / PowerPoint
+ * files are kept under
+ *   MBA/reMarkable/<class>/<Homework | Lecture Slides | In Lecture Notes | Readings & Cases | Exams | Prep>
+ * Files that are already PDFs are imported straight from the course
+ * folders (see REMARKABLE_COPY_NATIVE_PDFS).
  * The per-course folders above stay the system of record; the
  * reMarkable tree is a read-only copy this script owns. Rules:
  *
@@ -249,6 +272,11 @@ const PREP_SUBFOLDER = "Prep";
 // Never copied to reMarkable (no useful PDF form).
 const REMARKABLE_SKIP_EXT = ["xlsx", "xls", "xlsm", "csv"];
 
+// v5.3: false = files that are already PDFs stay only in the course
+// folders (import them from there); the reMarkable tree holds just Prep
+// and PDF conversions of Word / PowerPoint files. true = full mirror (v5.2).
+const REMARKABLE_COPY_NATIVE_PDFS = false;
+
 // Apps Script stops a run at 6 minutes; long jobs stop themselves
 // before that and pick up where they left off on the next run.
 const TIME_BUDGET_MS = 4.5 * 60 * 1000;
@@ -267,7 +295,7 @@ function hourlyRun() {
   // re-thrown at the end so Apps Script's failure email still reaches you.
   const errors = [];
   try {
-    [runSync, mirrorPrepToRemarkable, mirrorExtraSourcesToRemarkable, maybeSendDailySummary_].forEach(function (step) {
+    [runSync, mirrorPrepToRemarkable, mirrorExtraSourcesToRemarkable, buildDigestQueueIfDue_, maybeSendDailySummary_].forEach(function (step) {
       try {
         step();
       } catch (e) {
@@ -362,7 +390,8 @@ function sync_(dry) {
       newCount++;
       Logger.log(
         (dry ? "  WOULD SYNC: " : "  NEW: ") + destPath.join("/") + "/" + fname +
-        (rmTarget ? "   [reMarkable: " + rmTarget.folder.join("/") + "/" + rmTarget.name + "]" : "   [not for reMarkable]")
+        (rmTarget ? "   [reMarkable: " + rmTarget.folder.join("/") + "/" + rmTarget.name + "]" :
+          fileExt_(fname) === "pdf" && remarkableCategory_(destPath, fname) ? "   [PDF: import from course folder]" : "   [not for reMarkable]")
       );
 
       if (!dry) {
@@ -620,6 +649,7 @@ function remarkablePlan_(pathSegments, filename) {
   if (!folder) return null;
   const ext = fileExt_(filename);
   if (REMARKABLE_SKIP_EXT.indexOf(ext) !== -1) return null;
+  if (ext === "pdf" && !REMARKABLE_COPY_NATIVE_PDFS) return null; // v5.3: import from the course folder
   if (ext !== "pdf" && !isOfficeConvertible_(filename)) return null;
   return { folder: folder, name: ext === "pdf" ? filename : filename.replace(/\.[^.]+$/, ".pdf") };
 }
@@ -974,6 +1004,102 @@ function migrate_(dry) {
     mirrorExtraSourcesToRemarkable();
   }
   const summary = changes + (dry ? " change(s) would be made." : " change(s) made.");
+  Logger.log(summary);
+  return summary;
+}
+
+/**
+ * ONE-OFF (v5.3): moves PDF copies the slimmed tree no longer keeps to
+ * Drive's Trash (recoverable for 30 days). Walks reMarkable/<class>/*,
+ * skipping Prep, and trashes every PDF that isn't a conversion of a Word /
+ * PowerPoint file from bCourses; then trashes subfolders left empty.
+ * Run previewPruneRemarkable first: it only writes to the log. Afterwards
+ * run rebuildRemarkable until DONE -- it re-creates any conversion that
+ * was missing (it never re-copies native PDFs while
+ * REMARKABLE_COPY_NATIVE_PDFS is false).
+ */
+function previewPruneRemarkable() { return pruneRemarkable_(true); }
+function pruneRemarkable() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) throw new Error("The hourly sync is running right now -- try again in a few minutes.");
+  try { return pruneRemarkable_(false); } finally { lock.releaseLock(); }
+}
+
+function pruneRemarkable_(dry) {
+  const start = Date.now();
+  const rmRoot = findFolderPath_(DriveApp.getFolderById(REMARKABLE_ROOT_FOLDER_ID), [REMARKABLE_FOLDER_NAME]);
+  if (!rmRoot) return "No reMarkable folder found -- nothing to do.";
+  const state = loadState_();
+  const fileInfo = state._files || {};
+  let trashed = 0, kept = 0, outOfTime = false;
+
+  // Names of PDFs that are conversions of Office files (these stay).
+  function convertedNames_(course) {
+    const names = new Set();
+    (state[String(course.courseId)] || []).forEach(function (fid) {
+      const info = fileInfo[fid];
+      if (info && info.n && isOfficeConvertible_(info.n)) names.add(info.n.replace(/\.[^.]+$/, ".pdf"));
+    });
+    (course.extraSourceFolders || []).forEach(function (src) {
+      const files = DriveApp.getFolderById(src.folderId).getFiles();
+      while (files.hasNext()) {
+        const n = files.next().getName();
+        if (isOfficeConvertible_(n)) names.add(n.replace(/\.[^.]+$/, ".pdf"));
+      }
+    });
+    return names;
+  }
+
+  // Returns true if the folder is empty afterwards.
+  function walk_(folder, label, keepNames) {
+    let empty = true;
+    const subs = folder.getFolders();
+    while (subs.hasNext()) {
+      const sub = subs.next();
+      if (walk_(sub, label + "/" + sub.getName(), keepNames)) {
+        Logger.log((dry ? "  WOULD TRASH empty folder: " : "  Trashed empty folder: ") + label + "/" + sub.getName());
+        if (!dry) sub.setTrashed(true);
+      } else {
+        empty = false;
+      }
+    }
+    const files = folder.getFiles();
+    while (files.hasNext()) {
+      if (Date.now() - start > TIME_BUDGET_MS) { outOfTime = true; return false; }
+      const f = files.next();
+      const name = f.getName();
+      if (fileExt_(name) === "pdf" && !keepNames.has(name)) {
+        trashed++;
+        Logger.log((dry ? "  WOULD TRASH: " : "  Trashed: ") + label + "/" + name);
+        if (!dry) f.setTrashed(true);
+      } else {
+        kept++;
+        empty = false;
+      }
+    }
+    return empty && !outOfTime;
+  }
+
+  COURSES.forEach(function (course) {
+    if (outOfTime || !course.remarkableFolder) return;
+    const classFolder = findFolderPath_(rmRoot, [course.remarkableFolder]);
+    if (!classFolder) return;
+    Logger.log("=== " + course.remarkableFolder + " ===");
+    const keep = convertedNames_(course);
+    const subs = classFolder.getFolders();
+    while (subs.hasNext() && !outOfTime) {
+      const sub = subs.next();
+      if (sub.getName() === PREP_SUBFOLDER) continue; // Prep is never touched
+      const label = course.remarkableFolder + "/" + sub.getName();
+      if (walk_(sub, label, keep)) {
+        Logger.log((dry ? "  WOULD TRASH empty folder: " : "  Trashed empty folder: ") + label);
+        if (!dry) sub.setTrashed(true);
+      }
+    }
+  });
+
+  const summary = (dry ? "Would trash " : "Trashed ") + trashed + " PDF copy(ies); kept " + kept + " file(s). " +
+    (outOfTime ? "NOT FINISHED -- run it again." : "DONE.");
   Logger.log(summary);
   return summary;
 }
@@ -1357,4 +1483,4 @@ function scrubPracticeMaterials2024_2025() {
   ];
 
   return scrubFilesInto_(baseUrl, token, courseById_(courseId), DriveApp.getFolderById(destFolderId), ["Exams"], ids);
-}
+}

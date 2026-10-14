@@ -1,7 +1,7 @@
 # bcourses-to-drive-sync
 
 > **Problem:** Course files for my Haas MBA classes are scattered across bCourses (Canvas): Files tabs, lecture pages, assignments, modules and announcements. Every course organizes them differently, and downloading and filing them by hand every week was slow and easy to miss.
-> **Solution:** A Google Apps Script that checks bCourses every hour, figures out what each new file is, and files it into the right Google Drive folder. It also keeps a PDF-only copy of the files I study from, sorted into Homework, Lecture Slides, In Lecture Notes, Readings & Cases, Exams and Prep, for my reMarkable tablet.
+> **Solution:** A Google Apps Script that checks bCourses every hour, figures out what each new file is, and files it into the right Google Drive folder. For my reMarkable tablet, it also keeps PDF versions of the files the tablet can't open directly (Word and PowerPoint) plus my dated prep sheets; files that are already PDFs are imported straight from the course folders.
 > **Result:** Four courses sync themselves in the cloud with no laptop involved. Slides posted in the middle of the day reach Drive and the tablet folder within about an hour, and one summary email arrives each evening.
 
 ```mermaid
@@ -14,7 +14,7 @@ flowchart LR
     D --> F
     E --> F
     P[Prep sheets saved to<br/>course _Study folder] --> G
-    F -->|bCourses files only,<br/>PDF only, no Excel| G[(MBA/reMarkable/&lt;class&gt;/<br/>Homework · Lecture Slides ·<br/>In Lecture Notes · Readings & Cases ·<br/>Exams · Prep)]
+    F -->|Word/PowerPoint → PDF<br/>+ prep sheets only| G[(MBA/reMarkable/&lt;class&gt;/<br/>Homework · Lecture Slides ·<br/>In Lecture Notes · Readings & Cases ·<br/>Exams · Prep)]
     G -.->|manual import| H[reMarkable tablet]
     F --> M[Daily 9 PM<br/>summary email]
 ```
@@ -40,7 +40,7 @@ The trade-off is that Apps Script has no built-in git. This repo provides versio
 
 **Keeps originals in the course folders.** A Word homework file stays a Word file, so I can type my answers in it and submit it back to bCourses. Only the tablet copy is converted to PDF.
 
-**Keeps a reMarkable folder the script owns.** Under `MBA/reMarkable/<class>/` there are six subfolders:
+**Keeps a small reMarkable folder the script owns.** Since v5.3 it holds only what the course folders can't give the tablet: PDF conversions of Word/PowerPoint files from bCourses, and prep sheets. Files that are already PDFs (slides, readings, most exams) are imported from the course folders, so there's one copy of each. (`REMARKABLE_COPY_NATIVE_PDFS = true` restores the full v5.2 mirror.) Under `MBA/reMarkable/<class>/` the subfolders are:
 
 | Subfolder | What goes in it |
 |---|---|
@@ -53,7 +53,7 @@ The trade-off is that Apps Script has no built-in git. This repo provides versio
 
 The rules that keep it clean:
 - Only files the script downloaded from bCourses go in. My own files (anything in a `_` folder such as `_My Work`, or anything I add by hand) never do. Prep sheets are the one deliberate exception.
-- Everything is a PDF. PowerPoint and Word files are converted for the tablet copy (the originals stay as they are in the course folders), and Excel/CSV files are left out.
+- Everything is a PDF. PowerPoint and Word files are converted for the tablet copy (the originals stay as they are in the course folders); native PDFs aren't duplicated; Excel/CSV files are left out.
 - The subfolder comes from ordered whole-word rules (`REMARKABLE_CATEGORIES`), so "Practice Final" lands in Exams and "example" never counts as "exam".
 - A regenerated prep sheet replaces its old copy. Each copy records the original's last-updated time, so changes are caught reliably.
 - Prep sheets written by the cloud nightly task arrive as Google Docs. The script exports them to Letter-size PDFs from a temporary copy, so the original Doc is never touched (touching it would change its timestamp and trigger a re-export every hour).
@@ -75,12 +75,15 @@ The rules that keep it clean:
 | `mirrorExtraSourcesToRemarkable()` | Copy hand- or scrub-filled folders (e.g. past Exams) to the tablet folder, skipping excluded files | Called by `hourlyRun`, or by hand |
 | `previewMigration()` / `migrateToLectureSlides()` | Move already-synced files into the v5.2 `Lecture Slides` / `In Lecture Notes` layout (preview only logs) | By hand, one-off |
 | `rebuildRemarkable()` | Build the reMarkable tree from files already synced, using bCourses as the source of truth, and restore Word originals that older versions stored only as PDFs. Stops before Apps Script's 6-minute limit; re-run until it says DONE | By hand, after upgrading or changing categories |
+| `previewPruneRemarkable()` / `pruneRemarkable()` | Move the PDF copies the v5.3 tree no longer keeps to Drive's Trash, then remove empty subfolders (preview only logs; Prep is never touched) | By hand, one-off |
+| `buildDigestQueue()` / `previewDigestQueue()` | Compare each current course's `_Notes` and `Discussions` files with its Concept Log ledger and write the not-yet-digested ones to `_Planning/_digest_queue.json` (preview only logs) | Called nightly by `hourlyRun` (9 PM hour), or by hand |
 | `installTriggers()` | Delete old sync triggers and create the single hourly one | By hand, once |
 | `scrubPracticeMaterials()` / `scrubPracticeMaterials2024_2025()` | Backfill practice exams from pages hidden from students and not linked from any module, which the normal crawl can't see | By hand, one-off |
 
 ## Repo layout
 
 - `apps-script/Code.gs`: the full current script. The docstring at the top has the setup and upgrade steps.
+- `apps-script/DigestQueue.gs`: the nightly digest queue (v5.4), a second file in the same Apps Script project.
 
 ## Configuration
 
@@ -101,6 +104,7 @@ This repo is the **intake layer** of a personal AI-assisted study workflow. The 
 - **Exam cheat sheet:** keeps a running Concept Log per course and builds the printable exam sheet from it.
 - **Homework coach:** works through problem sets with hints before answers and feeds what I struggled with into the Concept Log.
 - **Meeting-notes sorter:** files Granola meeting and class notes into the same Drive course folders.
+- **Notes digest:** a weekly Claude task that distills class notes into each course's Concept Log. This script's nightly digest queue tells it which notes are new, so it doesn't spend tokens re-reading every log to find out (script gathers → agent judges).
 
 ## History
 
@@ -115,5 +119,8 @@ Each functional change is its own commit:
 | v5 | reMarkable moved under MBA with five subfolders (plus Homework/Practice Problems); bCourses-only rule; course folders keep original Word files while the tablet copy is PDF-only, no Excel; Prep copied from `_Study`; hourly schedule; daily 9 PM summary email |
 | v5.1 | State file pinned to a fixed folder, so `COURSES` can be reordered or trimmed safely; Google Doc prep sheets exported to PDF for the tablet (supports cloud-only nightly prep); next module's courses added as `TODO` placeholders |
 | v5.2 | Lecture pages found through Modules when the Pages tab is hidden (Economics and Data & Decisions had been syncing no slides); slide decks go to `Lecture Slides` in every course and on the tablet, other in-class files to `In Lecture Notes`; pre-class readings no longer synced from lecture pages; Exams folders copied to the tablet hourly; one-off migration for already-synced files |
+| v5.3 | reMarkable tree slimmed to Prep plus PDF conversions of Word/PowerPoint files; native PDFs are imported from the course folders instead of being copied (one source of truth); one-off prune of the old copies |
+
+| v5.4 | Nightly digest queue (`DigestQueue.gs`): notes in `_Notes`/`Discussions` not yet in each Concept Log ledger, written to one small JSON file for the weekly Claude tasks; course list read from the Course Index, so there's no second copy of IDs |
 
 See `git log` for the full history.
