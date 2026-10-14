@@ -3,6 +3,7 @@
 > **Problem:** Course files for my Haas MBA classes are scattered across bCourses (Canvas): Files tabs, lecture pages, assignments, modules and announcements. Every course organizes them differently, and downloading and filing them by hand every week was slow and easy to miss.
 > **Solution:** A Google Apps Script that checks bCourses every hour, figures out what each new file is, and files it into the right Google Drive folder. For my reMarkable tablet, it also keeps PDF versions of the files the tablet can't open directly (Word and PowerPoint) plus my dated prep sheets; files that are already PDFs are imported straight from the course folders.
 > **Result:** Four courses sync themselves in the cloud with no laptop involved. Slides posted in the middle of the day reach Drive and the tablet folder within about an hour, and one summary email arrives each evening.
+> **Built with:** Claude as my coding partner (Claude Projects and Claude Code): I set the requirements and design choices; Claude helped write, debug and document each version.
 
 ```mermaid
 flowchart LR
