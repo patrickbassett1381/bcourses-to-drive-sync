@@ -165,10 +165,12 @@ const COURSES = [
     remarkableFolder: "Finance",
   },
   {
-    courseId: 0, // TODO
+    // v5.7: Files and Pages tabs hidden; "Week N" pages sit in the
+    // "Weekly Materials" module. Slides aren't shared, so no slidesPattern.
+    courseId: 1557490,
     name: "MBA 205D - Business Communication",
-    driveFolderId: "TODO",
-    mode: "", // TODO
+    driveFolderId: "1sdbayKzgt6BCKFwnw1THbvbR5X3dkd5Y",
+    mode: "lecture-pages",
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
     remarkableFolder: "Business Communication",

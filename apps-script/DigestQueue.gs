@@ -1,5 +1,5 @@
 /**
- * Digest queue (v5.4, 2026-10-13)
+ * Digest queue (v5.6, 2026-10-21)
  *
  * WHAT IT DOES
  * Once a night (the 9 PM Pacific hour, same run as the daily email) it
@@ -46,6 +46,9 @@
  *    Final exam: <Weekday> <Mon> <D>, ...
  * A course is "current" until the day after its final exam. A course with
  * no readable final-exam date is treated as current and gets a warning.
+ * A course with no "Concept Log:" line (e.g. a speaker seminar set up
+ * "lean", like 294 Clean Energy Series) is never digested by design: it is
+ * left out of the queue, listed under "notTracked", and gets no warnings.
  *
  * FUNCTIONS
  *  - buildDigestQueue()   build and save the file now (run by hand to test)
@@ -91,7 +94,12 @@ function buildDigestQueue_(dry) {
   const state = loadState_();
   const idCache = state._noteGranolaIds || {}; // fileId -> Granola ID ("" = none)
 
-  const courses = readCoursesFromIndex_(warnings).filter(function (c) {
+  const all = readCoursesFromIndex_(warnings);
+  // No Concept Log line = not digested by design (v5.6): skip quietly.
+  const notTracked = all.filter(function (c) { return !c.conceptLogId; })
+    .map(function (c) { return c.code + " " + c.name; });
+  const courses = all.filter(function (c) {
+    if (!c.conceptLogId) return false;
     if (!c.finalExam) return true; // unknown date: keep, warned in the parser
     return c.finalExam >= today;
   });
@@ -107,8 +115,8 @@ function buildDigestQueue_(dry) {
       logLastUpdated: null,
       pending: []
     };
-    if (!c.conceptLogId || !c.notesFolderId) {
-      warnings.push(c.code + ": missing Concept Log or _Notes ID in the Course Index; skipped.");
+    if (!c.notesFolderId) {
+      warnings.push(c.code + ": missing _Notes ID in the Course Index; skipped.");
       out.push(entry);
       return;
     }
@@ -142,6 +150,7 @@ function buildDigestQueue_(dry) {
     generatedAtPacific: Utilities.formatDate(now, TIME_ZONE, "yyyy-MM-dd HH:mm"),
     totalPending: total,
     courses: out,
+    notTracked: notTracked,
     warnings: warnings
   };
 
@@ -201,7 +210,7 @@ function readCoursesFromIndex_(warnings) {
   courses.forEach(function (c) {
     if (c.finalExam === undefined || c.finalExam === null) {
       c.finalExam = null;
-      warnings.push(c.code + ": no readable \"Final exam:\" date in the Course Index; treated as current.");
+      if (c.conceptLogId) warnings.push(c.code + ": no readable \"Final exam:\" date in the Course Index; treated as current.");
     }
   });
   return courses;
