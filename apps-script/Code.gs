@@ -1,5 +1,8 @@
-﻿
 /**
+ * v5.8 changes (2026-10-25): 203 Finance (lecture-pages, slidesPattern
+ * /_lect\d+/i) and 206 Marketing (mirror, Lectures -> Lecture Slides,
+ * excludes 263/268/269 leftovers) filled in from term-setup.
+ *
  * v5.5 changes (2026-10-19): Fall A (200S, 201A, 202, 205) removed from
  * COURSES after finals, so the hourly run stops checking those four
  * bCourses sites. Their Drive folders now sit in 01 Classes > Fall A 2026
@@ -152,17 +155,19 @@ const SLIDES_FOLDER_NAME = "Lecture Slides";
 
 const COURSES = [
   // v5.5: Fall A (200S, 201A, 202, 205) removed after finals (Oct 19).
-  // ---- Fall B (starts Oct 19). Placeholders: skipped until term-setup
-  // fills in courseId, driveFolderId and mode. Always ADD new terms at
-  // the end of this list; remove a term's entries once its finals are done.
+  // ---- Fall B (starts Oct 26). Always ADD new terms at the end of this
+  // list; remove a term's entries once its finals are done.
   {
-    courseId: 0, // TODO: from bCourses
+    // v5.8: Files and Pages tabs hidden; "Class N" pages sit in the
+    // "Weekly Materials" module. Slide decks are "MBA203_LectNN_print.pdf".
+    courseId: 1555531,
     name: "MBA 203 - Finance",
-    driveFolderId: "TODO",
-    mode: "", // TODO: "mirror" or "lecture-pages"
+    driveFolderId: "1xyShx8_l9QZIvvAz5YUAv1mgdQZljti3",
+    mode: "lecture-pages",
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
     excludeKeywords: ["syllabus", "roster"],
     remarkableFolder: "Finance",
+    slidesPattern: /_lect\d+/i,
   },
   {
     // v5.7: Files and Pages tabs hidden; "Week N" pages sit in the
@@ -176,13 +181,17 @@ const COURSES = [
     remarkableFolder: "Business Communication",
   },
   {
-    courseId: 0, // TODO
+    // v5.8: Files tab visible with real folders (Lectures, Exercises/ClassN,
+    // QSAs...). "263"/"268"/"269" skip leftover files from other courses
+    // sitting in the Files root.
+    courseId: 1556326,
     name: "MBA 206 - Marketing",
-    driveFolderId: "TODO",
-    mode: "", // TODO
+    driveFolderId: "1VTJE10lMJrAjN3RK3hs6-KYdurtY7YbW",
+    mode: "mirror",
     includeExt: ["pdf", "pptx", "docx", "xlsx"],
-    excludeKeywords: ["syllabus", "roster"],
+    excludeKeywords: ["syllabus", "roster", "263", "268", "269"],
     remarkableFolder: "Marketing",
+    folderRenames: { lectures: SLIDES_FOLDER_NAME },
   },
 ];
 
@@ -498,11 +507,16 @@ function discoverForLecturePagesCourse_(baseUrl, token, courseId) {
   return results;
 }
 
+// v5.8: exam materials (practice finals/midterms, cheat sheets, past
+// finals like "Final2022") are checked first, so a "...solutions" file
+// stays with its practice exam instead of landing in Homework.
 function classifyStrayPath_(filename) {
   const lower = (filename || "").toLowerCase();
+  const examKw = ["exam", "midterm", "practice", "cheatsheet", "cheat sheet"];
   const homeworkKw = ["homework", "hw", "problem set", "pset", "assignment", "solution", "submission"];
   const readingKw = ["reading", "pre-class", "preclass", "pre class", "case"];
   const lectureKw = ["lecture", "slide", "notes"];
+  if (examKw.some(function (kw) { return lower.indexOf(kw) !== -1; }) || /final\s?\d{4}/.test(lower)) return ["Exams"];
   if (homeworkKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return ["Homework"];
   if (readingKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return ["Readings"];
   if (lectureKw.some(function (kw) { return lower.indexOf(kw) !== -1; })) return [SLIDES_FOLDER_NAME]; // v5.2: was "Lecture Notes"
@@ -1365,4 +1379,3 @@ function getProp_(key, fallback) {
 function courseById_(courseId) {
   return COURSES.filter(function (c) { return c.courseId === courseId; })[0];
 }
-

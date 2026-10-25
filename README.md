@@ -124,5 +124,6 @@ Each functional change is its own commit:
 | v5.5 | Fall A (200S, 201A, 202, 205) removed from `COURSES` after finals, so the hourly run stops checking their bCourses sites; course folders moved to 01 Classes › Fall A 2026 (same IDs, so `STATE_FOLDER_ID` is unchanged) |
 | v5.6 | Digest queue skips courses with no `Concept Log:` line in the Course Index (e.g. 294 Clean Energy Series, a speaker seminar set up without one): listed under `notTracked`, no nightly warnings, and their notes never show as "missed" |
 | v5.7 | 205D Business Communication filled into `COURSES` (lecture-pages, no slides shared), so it syncs and its dated `_Study` prep sheets reach the tablet; 203 and 206 stay placeholders until their bCourses sites are published |
+| v5.8 | 203 Finance (lecture-pages, slide decks matched by `_lectNN`) and 206 Marketing (mirror, `Lectures` → `Lecture Slides`, leftover 263/268/269 files excluded) filled into `COURSES`; module-only exam files (practice finals/midterms, cheat sheets, past finals) now go to `Exams` instead of `Unsorted - Review` or `Homework` |
 
 See `git log` for the full history.
