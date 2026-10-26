@@ -84,6 +84,7 @@ The rules that keep it clean:
 
 - `apps-script/Code.gs`: the full current script. The docstring at the top has the setup and upgrade steps.
 - `apps-script/DigestQueue.gs`: the nightly digest queue (v5.4), a second file in the same Apps Script project.
+- `apps-script/AssignmentSync.gs`: **parked, never deployed.** A planned assignment due-date tracker (bCourses → Google Sheet) that was written but never run; see its header.
 
 ## Configuration
 
@@ -125,5 +126,6 @@ Each functional change is its own commit:
 | v5.6 | Digest queue skips courses with no `Concept Log:` line in the Course Index (e.g. 294 Clean Energy Series, a speaker seminar set up without one): listed under `notTracked`, no nightly warnings, and their notes never show as "missed" |
 | v5.7 | 205D Business Communication filled into `COURSES` (lecture-pages, no slides shared), so it syncs and its dated `_Study` prep sheets reach the tablet; 203 and 206 stay placeholders until their bCourses sites are published |
 | v5.8 | 203 Finance (lecture-pages, slide decks matched by `_lectNN`) and 206 Marketing (mirror, `Lectures` → `Lecture Slides`, leftover 263/268/269 files excluded) filled into `COURSES`; module-only exam files (practice finals/midterms, cheat sheets, past finals) now go to `Exams` instead of `Unsorted - Review` or `Homework` |
+| — | `AssignmentSync.gs` added for reference only: a parked due-date tracker that was never pasted into Apps Script or run |
 
 See `git log` for the full history.
