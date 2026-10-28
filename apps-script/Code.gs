@@ -1,4 +1,11 @@
 /**
+ * v5.9 changes (2026-10-27): exam solutions (soln / solution / answer
+ * key) are no longer converted to PDF for the reMarkable; the original
+ * stays in the course's Exams folder. rebuildRemarkable re-classifies
+ * files that an older version parked in "Unsorted - Review", so files
+ * moved by hand into the folder the current rules pick get their
+ * reMarkable copies. Upgrade: paste, Save, run rebuildRemarkable.
+ *
  * v5.8 changes (2026-10-25): 203 Finance (lecture-pages, slidesPattern
  * /_lect\d+/i) and 206 Marketing (mirror, Lectures -> Lecture Slides,
  * excludes 263/268/269 leftovers) filled in from term-setup.
@@ -239,6 +246,11 @@ const PREP_SUBFOLDER = "Prep";
 
 // Never copied to reMarkable (no useful PDF form).
 const REMARKABLE_SKIP_EXT = ["xlsx", "xls", "xlsm", "csv"];
+
+// v5.9: exam solutions stay in the course's Exams folder only; the
+// tablet gets the blank practice exam to work on. Substring match, so
+// "PracticeMidtermSoln" counts. Other categories are unaffected.
+const REMARKABLE_EXAM_SKIP_RE = /soln|solution|answer ?key/i;
 
 // v5.3: false = files that are already PDFs stay only in the course
 // folders (import them from there); the reMarkable tree holds just Prep
@@ -620,6 +632,7 @@ function fileExt_(name) {
 function remarkablePlan_(pathSegments, filename) {
   const folder = remarkableCategory_(pathSegments, filename);
   if (!folder) return null;
+  if (folder[0] === "Exams" && REMARKABLE_EXAM_SKIP_RE.test(filename || "")) return null; // v5.9
   const ext = fileExt_(filename);
   if (REMARKABLE_SKIP_EXT.indexOf(ext) !== -1) return null;
   if (ext === "pdf" && !REMARKABLE_COPY_NATIVE_PDFS) return null; // v5.3: import from the course folder
@@ -814,6 +827,18 @@ function rebuildRemarkable_() {
         if (!destPath) continue;
         info = { n: fname, p: destPath };
         fileInfo[fid] = info;
+      }
+
+      // v5.9: a file an older version parked in "Unsorted - Review" is
+      // re-classified with today's rules. If it now has a home, record
+      // it; the Drive file is still found by its ID (info.d), so a file
+      // already moved there by hand works too.
+      if (info.p && info.p[0] === UNSORTED_FOLDER_NAME) {
+        const newPath = destPathFor_(destinations[fid], info.n, course);
+        if (newPath && newPath[0] !== UNSORTED_FOLDER_NAME) {
+          Logger.log("  re-classified: " + info.n + " -> " + newPath.join("/"));
+          info.p = newPath;
+        }
       }
 
       let file = info.d ? safeGetFile_(info.d) : null;
